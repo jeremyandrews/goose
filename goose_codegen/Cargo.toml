@@ -10,5 +10,5 @@ crate_type = ["proc-macro"]
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
-syn = "1"
-
+# "extra-traits" is for Debug. Disable this when releasing to crates.io
+syn = { version = "1", features = ["extra-traits"] }
