@@ -282,9 +282,9 @@
 //! See the License for the specific language governing permissions and
 //! limitations under the License.
 
-use http::method::Method;
-use http::StatusCode;
-use reqwest::{header, Client, ClientBuilder, RequestBuilder, Response};
+use surf::http::{Method, Url, StatusCode};
+use surf::http::headers::Headers;
+use surf::{RequestBuilder, Client, Response};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -294,7 +294,6 @@ use std::sync::atomic::{self, AtomicUsize};
 use std::sync::Arc;
 use std::{future::Future, pin::Pin, time::Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use url::Url;
 
 use crate::metrics::GooseMetric;
 use crate::{GooseConfiguration, GooseError, WeightedGooseTasks};
@@ -327,7 +326,7 @@ pub type GooseTaskResult = Result<(), GooseTaskError>;
 #[derive(Debug)]
 pub enum GooseTaskError {
     /// Contains a reqwest::Error.
-    Reqwest(reqwest::Error),
+    //Surf(surf::Error),
     /// Contains a url::ParseError.
     Url(url::ParseError),
     /// The request failed. The `GooseRawRequest` that failed can be found in
@@ -360,7 +359,7 @@ pub enum GooseTaskError {
 impl GooseTaskError {
     fn describe(&self) -> &str {
         match *self {
-            GooseTaskError::Reqwest(_) => "reqwest::Error",
+            //GooseTaskError::Surf(_) => "surf::Error",
             GooseTaskError::Url(_) => "url::ParseError",
             GooseTaskError::RequestFailed { .. } => "request failed",
             GooseTaskError::RequestCanceled { .. } => {
@@ -377,9 +376,10 @@ impl GooseTaskError {
 impl fmt::Display for GooseTaskError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            GooseTaskError::Reqwest(ref source) => {
+            /*
+            GooseTaskError::Surf(ref source) => {
                 write!(f, "GooseTaskError: {} ({})", self.describe(), source)
-            }
+            }*/
             GooseTaskError::Url(ref source) => {
                 write!(f, "GooseTaskError: {} ({})", self.describe(), source)
             }
@@ -401,7 +401,7 @@ impl fmt::Display for GooseTaskError {
 impl std::error::Error for GooseTaskError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
-            GooseTaskError::Reqwest(ref source) => Some(source),
+            //GooseTaskError::Surf(ref source) => Some(source),
             GooseTaskError::Url(ref source) => Some(source),
             GooseTaskError::RequestCanceled { ref source } => Some(source),
             GooseTaskError::MetricsFailed { ref source } => Some(source),
@@ -411,12 +411,14 @@ impl std::error::Error for GooseTaskError {
     }
 }
 
+/*
 /// Auto-convert Reqwest errors.
-impl From<reqwest::Error> for GooseTaskError {
-    fn from(err: reqwest::Error) -> GooseTaskError {
-        GooseTaskError::Reqwest(err)
+impl From<surf::Error> for GooseTaskError {
+    fn from(err: surf::Error) -> GooseTaskError {
+        GooseTaskError::Surf(err)
     }
 }
+*/
 
 /// Auto-convert Url errors.
 impl From<url::ParseError> for GooseTaskError {
@@ -630,12 +632,12 @@ pub enum GooseMethod {
 
 fn goose_method_from_method(method: Method) -> Result<GooseMethod, GooseTaskError> {
     Ok(match method {
-        Method::DELETE => GooseMethod::DELETE,
-        Method::GET => GooseMethod::GET,
-        Method::HEAD => GooseMethod::HEAD,
-        Method::PATCH => GooseMethod::PATCH,
-        Method::POST => GooseMethod::POST,
-        Method::PUT => GooseMethod::PUT,
+        Method::Delete => GooseMethod::DELETE,
+        Method::Get => GooseMethod::GET,
+        Method::Head => GooseMethod::HEAD,
+        Method::Patch => GooseMethod::PATCH,
+        Method::Post => GooseMethod::POST,
+        Method::Put => GooseMethod::PUT,
         _ => {
             return Err(GooseTaskError::InvalidMethod { method });
         }
@@ -704,7 +706,7 @@ impl GooseRawRequest {
 
     fn set_status_code(&mut self, status_code: Option<StatusCode>) {
         self.status_code = match status_code {
-            Some(status_code) => status_code.as_u16(),
+            Some(status_code) => status_code.into(),
             None => 0,
         };
     }
@@ -846,10 +848,10 @@ impl PartialOrd for GooseRequest {
 #[derive(Debug)]
 pub struct GooseResponse {
     pub request: GooseRawRequest,
-    pub response: Result<Response, reqwest::Error>,
+    pub response: Result<Response, surf::Error>,
 }
 impl GooseResponse {
-    pub fn new(request: GooseRawRequest, response: Result<Response, reqwest::Error>) -> Self {
+    pub fn new(request: GooseRawRequest, response: Result<Response, surf::Error>) -> Self {
         GooseResponse { request, response }
     }
 }
@@ -870,7 +872,7 @@ impl GooseDebug {
     fn new(
         tag: &str,
         request: Option<&GooseRawRequest>,
-        header: Option<&header::HeaderMap>,
+        header: Option<&Headers>,
         body: Option<&str>,
     ) -> Self {
         GooseDebug {
@@ -937,10 +939,11 @@ impl GooseUser {
         load_test_hash: u64,
     ) -> Result<Self, GooseError> {
         trace!("new user");
-        let client = Client::builder()
-            .user_agent(APP_USER_AGENT)
-            .cookie_store(true)
-            .build()?;
+        let client = Client::new();
+            // @TODO: add back user agent and cookies
+            //.user_agent(APP_USER_AGENT)
+            //.cookie_store(true)
+            //.build();
 
         Ok(GooseUser {
             started: Instant::now(),
@@ -983,16 +986,20 @@ impl GooseUser {
     ///  1. `--host` (host specified on the command line when running load test)
     ///  2. `GooseTaskSet.host` (default host defined for the current task set)
     ///  3. `GooseAttack.host` (default host defined for the current load test)
-    pub async fn build_url(&self, path: &str) -> Result<String, GooseTaskError> {
+    pub async fn build_url(&self, path: &str) -> Result<url::Url, GooseTaskError> {
         // If URL includes a host, simply use it.
         if let Ok(parsed_path) = Url::parse(path) {
+            // @TODO: this is broken
+            return Ok(parsed_path)
+            /*
             if let Some(_host) = parsed_path.host() {
-                return Ok(path.to_string());
+                return Ok(path);
             }
+            */
         }
 
         // Otherwise use the base_url.
-        Ok(self.base_url.read().await.join(path)?.to_string())
+        Ok(self.base_url.read().await.join(path)?)
     }
 
     /// A helper to make a `GET` request of a path and collect relevant metrics.
@@ -1461,7 +1468,7 @@ impl GooseUser {
         };
 
         let started = Instant::now();
-        let request = request_builder.build()?;
+        let request = request_builder.build();
 
         // String version of request path.
         let path = match Url::parse(&request.url().to_string()) {
@@ -1484,7 +1491,7 @@ impl GooseUser {
         );
 
         // Make the actual request.
-        let response = self.client.lock().await.execute(request).await;
+        let response = self.client.lock().await.send(request).await;
         raw_request.set_response_time(started.elapsed().as_millis());
 
         match &response {
@@ -1496,7 +1503,8 @@ impl GooseUser {
                     raw_request.success = false;
                 }
                 raw_request.set_status_code(Some(status_code));
-                raw_request.set_final_url(r.url().as_str());
+                // @TODO: how to get final URL?
+                //raw_request.set_final_url(r.url().as_str());
 
                 // Load test user was redirected.
                 if self.config.sticky_follow && raw_request.url != raw_request.final_url {
@@ -1665,7 +1673,7 @@ impl GooseUser {
         &self,
         tag: &str,
         request: &mut GooseRawRequest,
-        headers: Option<&header::HeaderMap>,
+        headers: Option<&Headers>,
         body: Option<&str>,
     ) -> GooseTaskResult {
         // Only send update if this was previously a success.
@@ -1758,7 +1766,7 @@ impl GooseUser {
         &self,
         tag: &str,
         request: Option<&GooseRawRequest>,
-        headers: Option<&header::HeaderMap>,
+        headers: Option<&Headers>,
         body: Option<&str>,
     ) -> GooseTaskResult {
         if !self.config.debug_file.is_empty() {
@@ -1838,8 +1846,8 @@ impl GooseUser {
     ///     Ok(())
     /// }
     /// ```
-    pub async fn set_client_builder(&self, builder: ClientBuilder) -> Result<(), GooseTaskError> {
-        *self.client.lock().await = builder.build()?;
+    pub async fn set_client_builder(&self, builder: Client) -> Result<(), GooseTaskError> {
+        *self.client.lock().await = builder;
 
         Ok(())
     }
@@ -2434,7 +2442,7 @@ mod tests {
         assert_eq!(raw_request.success, true);
         assert_eq!(raw_request.update, false);
 
-        let status_code = http::StatusCode::OK;
+        let status_code = surf::StatusCode::Ok;
         raw_request.set_status_code(Some(status_code));
         assert_eq!(raw_request.method, GooseMethod::GET);
         assert_eq!(raw_request.name, "/".to_string());
@@ -2667,20 +2675,20 @@ mod tests {
 
         // Confirm the URLs are correctly built using the default_host.
         let url = user.build_url("/foo").await.unwrap();
-        assert_eq!(&url, &[HOST, "foo"].concat());
+        assert_eq!(&url.as_str(), &[HOST, "foo"].concat());
         let url = user.build_url("bar/").await.unwrap();
-        assert_eq!(&url, &[HOST, "bar/"].concat());
+        assert_eq!(&url.as_str(), &[HOST, "bar/"].concat());
         let url = user.build_url("/foo/bar").await.unwrap();
-        assert_eq!(&url, &[HOST, "foo/bar"].concat());
+        assert_eq!(&url.as_str(), &[HOST, "foo/bar"].concat());
 
         // Confirm the URLs are built with their own specified host.
         let url = user.build_url("https://example.com/foo").await.unwrap();
-        assert_eq!(url, "https://example.com/foo");
+        assert_eq!(url.as_str(), "https://example.com/foo");
         let url = user
             .build_url("https://www.example.com/path/to/resource")
             .await
             .unwrap();
-        assert_eq!(url, "https://www.example.com/path/to/resource");
+        assert_eq!(url.as_str(), "https://www.example.com/path/to/resource");
 
         // Create a second user, this time setting a task_set_host.
         let base_url = get_base_url(
@@ -2695,11 +2703,11 @@ mod tests {
 
         // Confirm the URLs are correctly built using the task_set_host.
         let url = user2.build_url("/foo").await.unwrap();
-        assert_eq!(url, "http://www2.example.com/foo");
+        assert_eq!(url.as_str(), "http://www2.example.com/foo");
 
         // Confirm URLs are still built with their own specified host.
         let url = user2.build_url("https://example.com/foo").await.unwrap();
-        assert_eq!(url, "https://example.com/foo");
+        assert_eq!(url.as_str(), "https://example.com/foo");
 
         // Recreate user2.
         let server = MockServer::start();
@@ -2707,45 +2715,45 @@ mod tests {
 
         // Create a GET request.
         let mut goose_request = user2.goose_get("/foo").await.unwrap();
-        let mut built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::GET);
+        let mut built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Get);
         assert_eq!(built_request.url().as_str(), server.url("/foo"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
 
         // Create a POST request.
         goose_request = user2.goose_post("/path/to/post").await.unwrap();
-        built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::POST);
+        built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Post);
         assert_eq!(built_request.url().as_str(), server.url("/path/to/post"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
 
         // Create a PUT request.
         goose_request = user2.goose_put("/path/to/put").await.unwrap();
-        built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::PUT);
+        built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Put);
         assert_eq!(built_request.url().as_str(), server.url("/path/to/put"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
 
         // Create a PATCH request.
         goose_request = user2.goose_patch("/path/to/patch").await.unwrap();
-        built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::PATCH);
+        built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Patch);
         assert_eq!(built_request.url().as_str(), server.url("/path/to/patch"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
 
         // Create a DELETE request.
         goose_request = user2.goose_delete("/path/to/delete").await.unwrap();
-        built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::DELETE);
+        built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Delete);
         assert_eq!(built_request.url().as_str(), server.url("/path/to/delete"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
 
         // Create a HEAD request.
         goose_request = user2.goose_head("/path/to/head").await.unwrap();
-        built_request = goose_request.build().unwrap();
-        assert_eq!(built_request.method(), &Method::HEAD);
+        built_request = goose_request.build();
+        assert_eq!(built_request.method(), Method::Head);
         assert_eq!(built_request.url().as_str(), server.url("/path/to/head"));
-        assert_eq!(built_request.timeout(), None);
+        //assert_eq!(built_request.timeout(), None);
     }
 
     #[tokio::test]
@@ -2816,10 +2824,10 @@ mod tests {
             .post(COMMENT_PATH, "foo")
             .await
             .expect("post returned unexpected error");
-        let unwrapped_response = goose.response.unwrap();
+        let mut unwrapped_response = goose.response.unwrap();
         let status = unwrapped_response.status();
         assert_eq!(status, 200);
-        let body = unwrapped_response.text().await.unwrap();
+        let body = unwrapped_response.body_string().await.unwrap();
         assert_eq!(body, "foo");
         assert_eq!(goose.request.method, GooseMethod::POST);
         assert_eq!(goose.request.name, COMMENT_PATH);

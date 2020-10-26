@@ -475,8 +475,8 @@ pub struct Socket {}
 pub enum GooseError {
     /// Contains an io::Error.
     Io(io::Error),
-    /// Contains a reqwest::Error.
-    Reqwest(reqwest::Error),
+    /// Contains a surf::Error.
+    //Surf(surf::Error),
     /// Failed attempt to use code that requires a compile-time feature be enabled. The missing
     /// feature is named in `.feature`. An optional explanation may be found in `.detail`.
     FeatureNotEnabled { feature: String, detail: String },
@@ -515,7 +515,7 @@ impl GooseError {
     fn describe(&self) -> &str {
         match *self {
             GooseError::Io(_) => "io::Error",
-            GooseError::Reqwest(_) => "reqwest::Error",
+            //GooseError::Surf(_) => "surf::Error",
             GooseError::FeatureNotEnabled { .. } => "required compile-time feature not enabled",
             GooseError::InvalidHost { .. } => "failed to parse hostname",
             GooseError::InvalidOption { .. } => "invalid option or value specified",
@@ -531,9 +531,9 @@ impl fmt::Display for GooseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             GooseError::Io(ref source) => write!(f, "GooseError: {} ({})", self.describe(), source),
-            GooseError::Reqwest(ref source) => {
+            /*GooseError::Surf(ref source) => {
                 write!(f, "GooseError: {} ({})", self.describe(), source)
-            }
+            }*/
             GooseError::InvalidHost {
                 ref parse_error, ..
             } => write!(f, "GooseError: {} ({})", self.describe(), parse_error),
@@ -547,7 +547,7 @@ impl std::error::Error for GooseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             GooseError::Io(ref source) => Some(source),
-            GooseError::Reqwest(ref source) => Some(source),
+            //GooseError::Surf(ref source) => Some(source),
             GooseError::InvalidHost {
                 ref parse_error, ..
             } => Some(parse_error),
@@ -556,12 +556,14 @@ impl std::error::Error for GooseError {
     }
 }
 
-/// Auto-convert Reqwest errors.
-impl From<reqwest::Error> for GooseError {
-    fn from(err: reqwest::Error) -> GooseError {
-        GooseError::Reqwest(err)
+/*
+/// Auto-convert Surf errors.
+impl From<surf::Error> for GooseError {
+    fn from(err: surf::Error) -> GooseError {
+        GooseError::Surf(err)
     }
 }
+*/
 
 /// Auto-convert IO errors.
 impl From<io::Error> for GooseError {
