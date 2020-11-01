@@ -2,6 +2,7 @@
 
 ## 0.10.5-dev
  - properly reset metrics after all users launch in Gaggle mode (unless --no-reset-metrics is enabled)
+ - don't limit how many Workers start until Manager confirms sufficient are available and responsive
 
 ## 0.10.4 Nov 1, 2020
  - add new `examples/umami` for load testing Drupal 9 demo install profile
