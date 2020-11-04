@@ -192,6 +192,10 @@ pub struct GooseMetrics {
     /// A hash of the load test, useful to verify if different metrics are from
     /// the same load test.
     pub hash: u64,
+    /// Timestamp when the load test started.
+    pub started: usize,
+    /// Timestamp when the load test ended.
+    pub ended: usize,
     /// How many seconds the load test ran.
     pub duration: usize,
     /// Total number of users simulated during this load test.
@@ -209,6 +213,8 @@ pub struct GooseMetrics {
     /// Flag indicating whether or not to display metrics, set to false on Workers. This
     /// defaults to false because we're deriving Default.
     pub display_metrics: bool,
+    /// Flag indicating whether or not to display overview, defaults to false.
+    pub no_display_overview: bool,
 }
 
 impl GooseMetrics {
@@ -996,6 +1002,41 @@ impl GooseMetrics {
 
         Ok(())
     }
+
+    // Optionally prepares an overview table.
+    pub fn fmt_overview(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // If there's nothing to display, exit immediately.
+        if self.no_display_overview {
+            return Ok(());
+        }
+
+        writeln!(
+            fmt,
+            " ------------------------------------------------------------------------------"
+        )?;
+        writeln!(
+            fmt,
+            " Loadtest started: {}, ended: {}", "@TODO", "@TODO",
+        )?;
+        writeln!(
+            fmt,
+            " Duration: {} seconds", self.duration,
+        )?;
+        writeln!(
+            fmt,
+            " Users: {}", self.users,
+        )?;
+        writeln!(
+            fmt,
+            " Tasks: {}", "@TODO",
+        )?;
+        writeln!(
+            fmt,
+            " ------------------------------------------------------------------------------"
+        )?;
+
+        Ok(())
+    }
 }
 
 impl fmt::Display for GooseMetrics {
@@ -1007,7 +1048,8 @@ impl fmt::Display for GooseMetrics {
         self.fmt_requests(fmt)?;
         self.fmt_response_times(fmt)?;
         self.fmt_percentiles(fmt)?;
-        self.fmt_status_codes(fmt)
+        self.fmt_status_codes(fmt)?;
+        self.fmt_overview(fmt)
     }
 }
 
