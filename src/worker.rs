@@ -17,7 +17,7 @@ use crate::{get_worker_id, GooseAttack, GooseConfiguration, GooseMode, WORKER_ID
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GaggleMetrics {
     /// Load test hash, used to ensure all Workers are running the same load test.
-    WorkerInit(u64),
+    WorkerHeartbeat(u64),
     /// Goose request metrics.
     Requests(GooseRequestMetrics),
     /// Goose task metrics.
