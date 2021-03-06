@@ -1,10 +1,10 @@
 use lazy_static::lazy_static;
-use nng::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::{thread, time};
+use tokio::net::TcpListener;
 
 use crate::goose::GooseRequest;
 use crate::metrics::{self, GooseRequestMetrics, GooseTaskMetric, GooseTaskMetrics};
