@@ -45,6 +45,7 @@ pub mod goose;
 mod graph;
 pub mod logger;
 pub mod metrics;
+mod pola;
 pub mod prelude;
 mod report;
 mod test_plan;
