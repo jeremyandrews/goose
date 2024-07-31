@@ -10,9 +10,11 @@
 
 mod common;
 pub mod coordinated_omission;
+mod delta;
 
-pub(crate) use common::ReportData;
+pub(crate) use common::{load_baseline_file, ReportData};
 pub use coordinated_omission::{CadenceCalculator, CoMetricsSummary, CoordinatedOmissionMetrics};
+pub(crate) use delta::*;
 
 use crate::config::GooseDefaults;
 use crate::goose::{get_base_url, GooseMethod, Scenario, TransactionName};
@@ -27,8 +29,7 @@ use itertools::Itertools;
 use num_format::{Locale, ToFormattedString};
 use regex::RegexSet;
 use reqwest::StatusCode;
-use serde::ser::SerializeStruct;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -1028,12 +1029,13 @@ impl ScenarioMetricAggregate {
 ///     Ok(())
 /// }
 /// ```
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct GooseMetrics {
     /// A hash of the load test, primarily used to validate all Workers in a Gaggle
     /// are running the same load test.
     pub hash: u64,
     /// A vector recording the history of each load test step.
+    #[serde(skip)]
     pub history: Vec<TestPlanHistory>,
     /// Total number of seconds the load test ran.
     pub duration: usize,
@@ -2690,6 +2692,7 @@ pub struct GooseErrorMetricAggregate {
     /// A counter reflecting how many times this error occurred.
     pub occurrences: usize,
 }
+
 impl GooseErrorMetricAggregate {
     pub(crate) fn new(method: GooseMethod, name: String, error: String) -> Self {
         GooseErrorMetricAggregate {
@@ -2809,11 +2812,9 @@ impl GooseAttack {
         let key = format!("{} {}", request_metric.raw.method, request_metric.name);
         let mut merge_request = match self.metrics.requests.get(&key) {
             Some(m) => m.clone(),
-            None => GooseRequestMetricAggregate::new(
-                &request_metric.name,
-                request_metric.raw.method.clone(),
-                0,
-            ),
+            None => {
+                GooseRequestMetricAggregate::new(&request_metric.name, request_metric.raw.method, 0)
+            }
         };
 
         // Handle a metrics update.
@@ -3030,7 +3031,7 @@ impl GooseAttack {
             Some(m) => m.clone(),
             // First time we've seen this error.
             None => GooseErrorMetricAggregate::new(
-                raw_request.raw.method.clone(),
+                raw_request.raw.method,
                 raw_request.name.to_string(),
                 raw_request.error.to_string(),
             ),
@@ -3042,11 +3043,10 @@ impl GooseAttack {
     // Update metrics showing how long the load test has been running.
     // 1.2 seconds will round down to 1 second. 1.6 seconds will round up to 2 seconds.
     pub(crate) fn update_duration(&mut self) {
-        self.metrics.duration = if self.started.is_some() {
-            self.started.unwrap().elapsed().as_secs_f32().round() as usize
-        } else {
-            0
-        };
+        self.metrics.duration = self
+            .started
+            .map(|started| started.elapsed().as_secs_f32().round() as usize)
+            .unwrap_or_default();
     }
 
     /// Process all requested reports.
@@ -3064,25 +3064,32 @@ impl GooseAttack {
                 })
         };
 
+        let baseline = self
+            .configuration
+            .baseline_file
+            .as_ref()
+            .map(load_baseline_file)
+            .transpose()?;
+
         for report in &self.configuration.report_file {
             let path = PathBuf::from(report);
             match path.extension().map(OsStr::to_string_lossy).as_deref() {
                 Some("html" | "htm") => {
                     let file = create(path).await?;
                     if write {
-                        self.write_html_report(file, report).await?;
+                        self.write_html_report(file, &baseline, report).await?;
                     }
                 }
                 Some("json") => {
                     let file = create(path).await?;
                     if write {
-                        self.write_json_report(file).await?;
+                        self.write_json_report(file, &baseline).await?;
                     }
                 }
                 Some("md") => {
                     let file = create(path).await?;
                     if write {
-                        self.write_markdown_report(file).await?;
+                        self.write_markdown_report(file, &baseline).await?;
                     }
                 }
                 None => {
@@ -3116,7 +3123,11 @@ impl GooseAttack {
     }
 
     /// Write a JSON report.
-    pub(crate) async fn write_json_report(&self, report_file: File) -> Result<(), GooseError> {
+    pub(crate) async fn write_json_report(
+        &self,
+        report_file: File,
+        baseline: &Option<ReportData<'_>>,
+    ) -> Result<(), GooseError> {
         let data = common::prepare_data(
             ReportOptions {
                 no_transaction_metrics: self.configuration.no_transaction_metrics,
@@ -3124,6 +3135,7 @@ impl GooseAttack {
                 no_status_codes: self.configuration.no_status_codes,
             },
             &self.metrics,
+            baseline,
         );
 
         serde_json::to_writer_pretty(BufWriter::new(report_file.into_std().await), &data)?;
@@ -3132,7 +3144,11 @@ impl GooseAttack {
     }
 
     /// Write a Markdown report.
-    pub(crate) async fn write_markdown_report(&self, report_file: File) -> Result<(), GooseError> {
+    pub(crate) async fn write_markdown_report(
+        &self,
+        report_file: File,
+        baseline: &Option<ReportData<'_>>,
+    ) -> Result<(), GooseError> {
         let data = common::prepare_data(
             ReportOptions {
                 no_transaction_metrics: self.configuration.no_transaction_metrics,
@@ -3140,6 +3156,7 @@ impl GooseAttack {
                 no_status_codes: self.configuration.no_status_codes,
             },
             &self.metrics,
+            baseline,
         );
 
         report::write_markdown_report(&mut BufWriter::new(report_file.into_std().await), data)
@@ -3149,6 +3166,7 @@ impl GooseAttack {
     pub(crate) async fn write_html_report(
         &self,
         mut report_file: File,
+        baseline: &Option<ReportData<'_>>,
         path: &str,
     ) -> Result<(), GooseError> {
         // Only write the report if enabled.
@@ -3242,6 +3260,7 @@ impl GooseAttack {
                 no_status_codes: self.configuration.no_status_codes,
             },
             &self.metrics,
+            baseline,
         );
 
         // Compile the request metrics template.
@@ -3320,7 +3339,10 @@ impl GooseAttack {
 
         let errors_template = errors
             .map(|errors| {
-                let error_rows = errors.into_iter().map(report::error_row).join("\n");
+                let error_rows = errors
+                    .into_iter()
+                    .map(|error| report::error_row(&error))
+                    .join("\n");
 
                 report::errors_template(
                     &error_rows,
