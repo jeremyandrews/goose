@@ -117,6 +117,367 @@ class TokenUsageTracker:
         logger.info(f"Total usage: {self.current_usage}/{self.budget_limit} tokens ({(self.current_usage/self.budget_limit)*100:.1f}%)")
         return self.current_usage
 
+def get_pr_diff(pr: PullRequest, file_filter: FileFilterConfig) -> Dict[str, str]:
+    """
+    Extract the diff content for a PR, filtered by relevant files.
+    
+    Args:
+        pr: GitHub PullRequest object
+        file_filter: FileFilterConfig object for filtering relevant files
+        
+    Returns:
+        Dictionary mapping filenames to their diff content
+    """
+    diff_contents = {}
+    
+    for file in pr.get_files():
+        # Skip files we don't want to review
+        if not file_filter.should_review_file(file.filename):
+            logger.debug(f"Skipping diff for {file.filename} (filtered out)")
+            continue
+            
+        # Skip files with no content changes (e.g., binary files, renames)
+        if file.patch is None:
+            logger.debug(f"Skipping {file.filename} (no diff content available)")
+            continue
+            
+        logger.info(f"Processing diff for {file.filename} (+{file.additions}, -{file.deletions})")
+        diff_contents[file.filename] = file.patch
+        
+    return diff_contents
+
+def chunk_content(content: Dict[str, str], max_tokens_per_chunk: int = 5000) -> List[Dict[str, Any]]:
+    """
+    Break large diffs into manageable chunks while preserving context.
+    
+    Args:
+        content: Dictionary mapping filenames to diff content
+        max_tokens_per_chunk: Maximum tokens per chunk
+        
+    Returns:
+        List of chunks, each a dict with files and their partial diffs
+    """
+    chunks = []
+    current_chunk = {}
+    current_tokens = 0
+    
+    for filename, diff in content.items():
+        # Simple token estimation (can be improved)
+        estimated_tokens = len(diff.split()) * 1.3
+        
+        # If this file would exceed chunk size, create a new chunk
+        if current_tokens > 0 and current_tokens + estimated_tokens > max_tokens_per_chunk:
+            chunks.append({
+                'files': current_chunk,
+                'estimated_tokens': current_tokens
+            })
+            current_chunk = {}
+            current_tokens = 0
+        
+        # If a single file is too large, split it (simplistic approach)
+        if estimated_tokens > max_tokens_per_chunk:
+            logger.warning(f"File {filename} is very large, splitting into multiple chunks")
+            
+            # Split by hunks (sections starting with @@ which indicate line ranges)
+            hunks = re.split(r'(^@@.*?@@.*?$)', diff, flags=re.MULTILINE)
+            
+            # Group hunks into reasonable sizes
+            hunk_chunks = []
+            current_hunk_chunk = []
+            current_hunk_tokens = 0
+            
+            # Ensure headers stay with their content
+            for i in range(0, len(hunks), 2):
+                if i+1 < len(hunks):  # Check if we have both header and content
+                    hunk_header = hunks[i]
+                    hunk_content = hunks[i+1]
+                    hunk_tokens = (len(hunk_header.split()) + len(hunk_content.split())) * 1.3
+                    
+                    if current_hunk_tokens + hunk_tokens > max_tokens_per_chunk:
+                        if current_hunk_chunk:
+                            hunk_chunks.append("".join(current_hunk_chunk))
+                            current_hunk_chunk = []
+                            current_hunk_tokens = 0
+                            
+                    current_hunk_chunk.extend([hunk_header, hunk_content])
+                    current_hunk_tokens += hunk_tokens
+            
+            # Add any remaining hunks
+            if current_hunk_chunk:
+                hunk_chunks.append("".join(current_hunk_chunk))
+            
+            # Process each hunk chunk as a separate file entry
+            for i, hunk_chunk in enumerate(hunk_chunks):
+                chunk_filename = f"{filename} (part {i+1}/{len(hunk_chunks)})"
+                current_chunk[chunk_filename] = hunk_chunk
+                current_tokens += len(hunk_chunk.split()) * 1.3
+                
+                # If this chunk is full, start a new one
+                if current_tokens > max_tokens_per_chunk:
+                    chunks.append({
+                        'files': current_chunk,
+                        'estimated_tokens': current_tokens
+                    })
+                    current_chunk = {}
+                    current_tokens = 0
+        else:
+            # Regular case: file fits in a chunk
+            current_chunk[filename] = diff
+            current_tokens += estimated_tokens
+    
+    # Add the last chunk if it has content
+    if current_chunk:
+        chunks.append({
+            'files': current_chunk,
+            'estimated_tokens': current_tokens
+        })
+    
+    logger.info(f"Split diff into {len(chunks)} chunks for processing")
+    return chunks
+
+def analyze_code_quality(diff_chunks: List[Dict[str, Any]], project_context: str, token_tracker: TokenUsageTracker) -> List[Dict[str, Any]]:
+    """
+    Analyze code quality by sending diff chunks to the LLM.
+    
+    Args:
+        diff_chunks: List of chunks containing file diffs
+        project_context: String containing project context
+        token_tracker: TokenUsageTracker for monitoring usage
+        
+    Returns:
+        List of dictionaries containing analysis results for each chunk
+    """
+    results = []
+    
+    # Debug option to dump files
+    debug_dump = os.environ.get("GOOSEBOT_DEBUG_DUMP") == "1"
+    
+    # Load quality review prompt template
+    prompt_template = load_prompt_template("quality", "v1")
+    
+    for i, chunk in enumerate(diff_chunks):
+        logger.info(f"Analyzing chunk {i+1}/{len(diff_chunks)} (~{int(chunk['estimated_tokens'])} tokens)")
+        
+        try:
+            # Format diff content for the prompt
+            files_diff = ""
+            for filename, diff in chunk['files'].items():
+                files_diff += f"### {filename}\n```diff\n{diff}\n```\n\n"
+            
+            # Create the prompt
+            prompt = prompt_template.format(
+                project_context=project_context,
+                files_diff=files_diff
+            )
+            
+            # Add complete prompt logging
+            print("\n===== COMPLETE PROMPT SENT TO LLM =====")
+            print(prompt)  # Print entire prompt, no truncation
+            print("===== END PROMPT =====\n")
+
+            # Optional file dump for future reference
+            if debug_dump:
+                dump_path = os.path.join(os.getcwd(), f"goosebot_prompt_{i}.txt")
+                try:
+                    with open(dump_path, "w") as f:
+                        f.write(prompt)
+                    print(f"Prompt also saved to {dump_path}")
+                except Exception as e:
+                    print(f"Failed to write prompt dump: {e}")
+            
+            # Call Anthropic API
+            response = call_anthropic_api(prompt, token_tracker, max_tokens=2000)
+            
+            # DEBUG - Print entire raw response
+            print("\n=== COMPLETE RAW API RESPONSE ===")
+            print(response["content"])
+            print("=== END RAW RESPONSE ===\n")
+            
+            # Store results
+            results.append({
+                'chunk_index': i,
+                'files': list(chunk['files'].keys()),
+                'analysis': response["content"]
+            })
+        except Exception as e:
+            print(f"CRITICAL ERROR in analyze_code_quality for chunk {i+1}: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Add an error result
+            results.append({
+                'chunk_index': i,
+                'files': list(chunk['files'].keys()),
+                'analysis': f"Error during analysis: {str(e)}"
+            })
+    
+    return results
+
+def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
+    """
+    Format code suggestions into a well-structured comment.
+    
+    Args:
+        analysis_results: Results from analyze_code_quality()
+        
+    Returns:
+        Formatted comment string
+    """
+    # Check if we have any results
+    if not analysis_results:
+        return "### GooseBot Code Quality Review\n\nNo issues found in the code."
+    
+    comment = "### GooseBot Code Quality Review\n\n"
+    
+    # Debug option to dump raw responses
+    debug_dump = os.environ.get("GOOSEBOT_DEBUG_DUMP") == "1"
+    
+    # Extract suggestions from all chunks
+    all_suggestions = []
+    for i, result in enumerate(analysis_results):
+        # Always print raw response for debugging
+        print("\n==== RAW LLM RESPONSE ====")
+        print(result['analysis'])
+        print("==== END RAW RESPONSE ====\n")
+        
+        # Dump raw response to file if enabled
+        if debug_dump:
+            dump_path = os.path.join(os.getcwd(), f"goosebot_response_{i}.txt")
+            try:
+                with open(dump_path, "w") as f:
+                    f.write(result['analysis'])
+                print(f"Dumped raw response to {dump_path}")
+            except Exception as e:
+                print(f"Failed to write debug dump: {e}")
+        
+        try:
+            # Try to parse JSON response if the LLM followed the structured format
+            match = re.search(r'```json\s*(.*?)\s*```', result['analysis'], re.DOTALL)
+            if match:
+                # Extract and clean up the JSON string
+                json_str = match.group(1).strip()
+                
+                # Handle special case for empty array (typo fix PRs)
+                if json_str.strip() == "[[]]":
+                    logger.info("Found empty array response [[]] - typo fix PR detected")
+                    return "### GooseBot Code Quality Review\n\nNo issues found. Typo fixes look good!"
+                
+                # Handle the specific error we're seeing with newlines and formatting
+                if json_str.startswith('\n'):
+                    print("WARNING: JSON starts with newline, fixing...")
+                    json_str = json_str.lstrip()
+                
+                # Special case for the specific error we're seeing
+                if '\n    "category"' in json_str:
+                    print("FIXING SPECIFIC ERROR: Found '\\n    \"category\"'")
+                    # This might be a JSON array that's not properly formatted
+                    # Try to repair it by adding square brackets and commas
+                    if not json_str.startswith('['):
+                        json_str = '[' + json_str
+                    if not json_str.endswith(']'):
+                        json_str = json_str + ']'
+                    # Replace newline+indent before "category" with comma
+                    json_str = re.sub(r'\n\s*"category"', ',"category"', json_str)
+                
+                # Log the JSON content for debugging
+                print(f"JSON STRING (after fixes): {json_str[:200]}...")
+                logger.debug(f"Extracted JSON: {json_str[:100]}...")
+                
+                try:
+                    # Attempt to parse the JSON
+                    suggestions = json.loads(json_str)
+                    all_suggestions.extend(suggestions)
+                except json.JSONDecodeError as e:
+                    # Better JSON error reporting
+                    position = e.pos
+                    context_start = max(0, position - 20)
+                    context_end = min(len(json_str), position + 20)
+                    error_context = json_str[context_start:context_end]
+                    
+                    logger.error(f"JSON parse error at position {position}: {e.msg}")
+                    logger.error(f"Context around error: '...{error_context}...'")
+                    
+                    # Simple fallback: try to extract individual JSON objects
+                    logger.info("Attempting fallback JSON parsing...")
+                    try:
+                        # Try to extract and parse individual JSON objects
+                        objects_pattern = r'\{\s*"category"\s*:.*?\}\s*(?=,|\]|$)'
+                        matches = re.findall(objects_pattern, json_str, re.DOTALL)
+                        
+                        if matches:
+                            logger.info(f"Found {len(matches)} potential JSON objects using fallback method")
+                            for obj_str in matches:
+                                try:
+                                    # Ensure it's a valid object with surrounding braces
+                                    if not obj_str.strip().startswith("{"):
+                                        obj_str = "{" + obj_str
+                                    if not obj_str.strip().endswith("}"):
+                                        obj_str = obj_str + "}"
+                                    
+                                    # Try to parse the individual object
+                                    suggestion = json.loads(obj_str)
+                                    all_suggestions.append(suggestion)
+                                    logger.info("Successfully parsed suggestion with fallback")
+                                except json.JSONDecodeError:
+                                    # Skip this object if it can't be parsed
+                                    continue
+                        
+                        # If fallback didn't work, add a generic suggestion with raw content
+                        if not matches:
+                            raise Exception("Fallback parsing failed")
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback parsing failed: {fallback_error}")
+                        all_suggestions.append({
+                            'category': 'Parsing Error',
+                            'description': f"Could not parse structured response: {e}",
+                            'suggestion': "Review the raw LLM output:\n\n```\n" + json_str[:500] + "...\n```",
+                            'impact': 'Unknown'
+                        })
+            else:
+                # Fallback to extracting suggestions from text format
+                logger.warning(f"Unable to parse JSON from LLM response, using fallback extraction")
+                # Just add the raw analysis as a single suggestion
+                all_suggestions.append({
+                    'category': 'General Feedback',
+                    'description': result['analysis'],
+                    'suggestion': 'See description for details.',
+                    'impact': 'Unknown'
+                })
+        except Exception as e:
+            logger.error(f"Error parsing suggestions: {e}")
+            # Include raw response if parsing fails
+            all_suggestions.append({
+                'category': 'Parsing Error',
+                'description': f"Error parsing suggestions: {e}",
+                'suggestion': result['analysis'][:1000] + ("..." if len(result['analysis']) > 1000 else ""),
+                'impact': 'Unknown'
+            })
+    
+    # Limit to top 5 issues (if more than 5)
+    if len(all_suggestions) > 5:
+        logger.info(f"Limiting from {len(all_suggestions)} to top 5 issues")
+        all_suggestions = all_suggestions[:5]
+    
+    # Group suggestions by category
+    categories = {}
+    for suggestion in all_suggestions:
+        category = suggestion.get('category', 'General')
+        if category not in categories:
+            categories[category] = []
+        categories[category].append(suggestion)
+    
+    # Build comment with categorized suggestions
+    for category, suggestions in categories.items():
+        comment += f"#### {category}\n\n"
+        for suggestion in suggestions:
+            comment += f"**Issue:** {suggestion.get('description', 'No description provided')}\n\n"
+            comment += f"**Suggestion:** {suggestion.get('suggestion', 'No suggestion provided')}\n\n"
+            if 'impact' in suggestion:
+                comment += f"**Impact:** {suggestion['impact']}\n\n"
+            comment += "---\n\n"
+    
+    return comment
+
 def gather_project_context() -> str:
     """
     Read memory-bank files to provide context to the AI.
@@ -555,36 +916,64 @@ def main():
         # Load prompt template
         prompt_template = load_prompt_template(args.scope, args.version)
         
-        # Format the prompt
-        prompt = prompt_template.format(
-            project_context=project_context,
-            pr_title=pr_details['title'],
-            pr_description=pr_details['description'],
-            files_changed=files_changed_summary
-        )
-        
-        # Call Anthropic API
-        response = call_anthropic_api(prompt, token_tracker)
-        
-        if "error" in response["content"].lower():
-            logger.error(f"API returned an error: {response['content']}")
-            post_pr_comment(pr, f"## GooseBot Error\n\n{response['content']}")
-            return
+        # Handle different review scopes
+        if args.scope == "quality":
+            logger.info("Performing code quality review")
             
-        # Extract suggestions from the response
-        new_suggestions = extract_suggestions_from_response(response["content"])
-        
-        # Check if we need to post a new comment based on content changes
-        if not args.force:
-            # Compare to previous suggestions
-            previous_suggestions = previous_analysis['previous_suggestions']
-            if set(new_suggestions) == set(previous_suggestions) and previous_suggestions:
-                logger.info("Our suggestions would be the same as before. Skipping comment.")
+            # Get PR diff
+            diff_contents = get_pr_diff(pr, file_filter)
+            
+            if not diff_contents:
+                logger.warning("No relevant diff content found to review")
+                post_pr_comment(pr, "### GooseBot Code Quality Review\n\nNo relevant diff content found to review based on current filter settings.")
                 return
-        
-        # If we get here, we need to post a new comment
-        logger.info("Posting new comment with review results")
-        post_pr_comment(pr, response["content"], current_hash)
+                
+            # Chunk the diff content
+            diff_chunks = chunk_content(diff_contents)
+            
+            # Analyze code quality
+            analysis_results = analyze_code_quality(diff_chunks, project_context, token_tracker)
+            
+            # Format suggestions
+            comment_text = format_code_suggestions(analysis_results)
+            
+            # Post comment
+            logger.info("Posting code quality review comment")
+            post_pr_comment(pr, comment_text, current_hash)
+        else:
+            # Original clarity review code
+            logger.info("Performing clarity review")
+            
+            # Format the prompt
+            prompt = prompt_template.format(
+                project_context=project_context,
+                pr_title=pr_details['title'],
+                pr_description=pr_details['description'],
+                files_changed=files_changed_summary
+            )
+            
+            # Call Anthropic API
+            response = call_anthropic_api(prompt, token_tracker)
+            
+            if "error" in response["content"].lower():
+                logger.error(f"API returned an error: {response['content']}")
+                post_pr_comment(pr, f"## GooseBot Error\n\n{response['content']}")
+                return
+                
+            # Extract suggestions from the response
+            new_suggestions = extract_suggestions_from_response(response["content"])
+            
+            # Check if we need to post a new comment based on content changes
+            if not args.force:
+                # Compare to previous suggestions
+                previous_suggestions = previous_analysis['previous_suggestions']
+                if set(new_suggestions) == set(previous_suggestions) and previous_suggestions:
+                    logger.info("Our suggestions would be the same as before. Skipping comment.")
+                    return
+            
+            # If we get here, we need to post a new comment
+            logger.info("Posting clarity review comment")
+            post_pr_comment(pr, response["content"], current_hash)
         
     except Exception as e:
         logger.error(f"Unexpected error: {e}")

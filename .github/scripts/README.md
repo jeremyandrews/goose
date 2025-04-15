@@ -1,106 +1,117 @@
-# GooseBot: AI-Powered Code Reviews for Goose
+# GooseBot - AI-Assisted Code Review Bot
 
-GooseBot is an AI-powered code review assistant for the Goose load testing framework. It uses Anthropic's Claude Sonnet model to provide automated feedback on pull requests.
+GooseBot is an AI-assisted code review tool for the Goose load testing framework. It provides automated, consistent feedback on pull requests to complement human reviewers.
 
 ## Features
 
-- Reviews PR clarity and documentation
-- Integrates with GitHub Actions workflow
-- Reads project context from memory-bank files
-- Filters files based on configurable patterns
-- Posts reviews as PR comments
+### Phase 1: PR Clarity Reviews
+- Evaluates PR title and description clarity
+- Provides conceptual suggestions that enhance understanding
+- Focuses on explaining the purpose and value of changes
+- Maintains concise, actionable feedback (maximum 2 issues)
 
-## Local Testing
-
-### Setup
-
-```bash
-# 1. Create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # On macOS/Linux
-
-# 2. Install the required dependencies
-pip install -r .github/scripts/requirements.txt
-
-# 3. Create a .env file in the project root
-echo "GITHUB_TOKEN=your_github_token_here" > .env
-echo "ANTHROPIC_API_KEY=your_anthropic_key_here" >> .env
-```
-
-### Usage
-
-```bash
-# Run with PR number
-.github/scripts/test_goosebot.py 616
-
-# Full GitHub PR URL
-.github/scripts/test_goosebot.py https://github.com/tag1consulting/goose/pull/616
-
-# Custom prompt file
-.github/scripts/test_goosebot.py 616 --prompt-file my_prompt.md 
-
-# Show full prompt (debug mode)
-.github/scripts/test_goosebot.py 616 --debug
-```
-
-## Setup Instructions
-
-### 1. GitHub Secrets Configuration
-
-To use GooseBot, you need to set up the following GitHub Secret:
-
-1. Go to your GitHub repository page
-2. Click on "Settings" (top navigation bar)
-3. In the left sidebar, click on "Secrets and variables" then "Actions"
-4. Click the "New repository secret" button
-5. Add the following secrets:
-   - Name: `ANTHROPIC_API_KEY`
-   - Value: Your Anthropic API key
-   
-   - Name: `ANTHROPIC_API_URL`
-   - Value: Your internal Anthropic API URL (for self-hosted Claude)
-
-The `GITHUB_TOKEN` is automatically provided by GitHub Actions and does not need to be manually configured.
-
-### 2. Workflow Configuration
-
-The GooseBot workflow is defined in `.github/workflows/goosebot_review.yml`. You can customize it by modifying:
-
-- File filtering patterns (`PR_REVIEW_WHITELIST` and `PR_REVIEW_BLACKLIST`)
-- Token budget limits
-- Review scope and other parameters
+### Phase 2: Code Quality Reviews
+- Analyzes PR code diffs for quality and best practices
+- Focuses on Rust best practices and idiomatic code
+- Provides categorized feedback with impact assessment
+- Handles large PRs with automatic chunking
+- Returns structured, actionable suggestions
 
 ## Usage
 
-GooseBot runs automatically on new PRs and PR updates. You can also trigger it manually:
+### GitHub Workflow
 
-1. Go to the "Actions" tab in your repository
-2. Select "GooseBot PR Review" from the workflows list
-3. Click "Run workflow"
-4. Enter the PR number and optionally the review scope
-5. Click "Run workflow" to start the review
+GooseBot runs automatically on pull requests, or can be triggered manually:
 
-## Customizing Reviews
+1. **Automatic**: GooseBot will run on any PR when:
+   - A new PR is opened
+   - A PR is updated
+   - A PR is reopened
 
-To customize the review process:
+2. **Manual**: Trigger from the Actions tab:
+   - Select "GooseBot PR Review" workflow
+   - Enter PR number
+   - Select review scope: "clarity" or "quality"
+   - Optionally check "Force review"
 
-- Edit prompt templates in `.github/prompts/v1/`
-- Add new review scopes by creating additional prompt files
-- Modify the file filtering patterns in the workflow file
+### Local Testing
 
-## Prompt Development
+For local development and testing without requiring a real GitHub PR:
 
-GooseBot uses versioned prompt templates stored in the `.github/prompts/` directory. To create a new review scope:
+```bash
+# Install dependencies
+pip install python-dotenv anthropic==0.45.2
 
-1. Create a new file in `.github/prompts/v1/` named `<scope>_review.md`
-2. Format it following the existing clarity review template
-3. Update the workflow to use your new scope
+# Test with a real PR (GitHub API)
+python .github/scripts/test_goosebot.py --pr 618
 
-## Troubleshooting
+# Test with a real PR using clarity scope
+python .github/scripts/test_goosebot.py --pr 618 --scope clarity
 
-If GooseBot encounters issues:
+# Test with mock data
+python .github/scripts/test_goosebot.py --mock simple
 
-- Check the GitHub Actions logs for detailed error messages
-- Verify that your ANTHROPIC_API_KEY is correctly set
-- Make sure the PR contains files that match the whitelist patterns
-- Check that anthropic and PyGithub dependencies are correctly installed
+# Test with different mock data types
+python .github/scripts/test_goosebot.py --mock large
+python .github/scripts/test_goosebot.py --mock error
+
+# Test chunking functionality
+python .github/scripts/test_goosebot.py --test-chunks
+
+# Test with real API (requires .env file with ANTHROPIC_API_KEY)
+python .github/scripts/test_goosebot.py --mock simple --use-real-api
+python .github/scripts/test_goosebot.py --pr 618 --use-real-api
+
+# Test with a custom diff file
+python .github/scripts/test_goosebot.py --mock custom --custom-file path/to/diff.patch
+
+# Force review of a PR even if no changes detected since last review
+python .github/scripts/test_goosebot.py --pr 618 --force
+```
+
+For real API testing, create a `.env` file with:
+```
+ANTHROPIC_API_KEY=your_api_key_here
+```
+
+## Configuration
+
+### File Filtering
+
+Set environment variables in the workflow file:
+```yaml
+PR_REVIEW_WHITELIST: "*.rs,*.md,*.py,*.toml,*.yml,*.yaml"
+PR_REVIEW_BLACKLIST: "tests/*,benches/*,target/*"
+```
+
+### Token Budget
+
+Control API token usage with:
+```yaml
+TOKEN_BUDGET: "100000"
+```
+
+## Prompt Templates
+
+Prompts are stored in `.github/prompts/{version}/{scope}_review.md`:
+
+- `v1/clarity_review.md`: Evaluates PR title and description clarity
+- `v1/quality_review.md`: Analyzes code quality and best practices
+
+## Architecture
+
+1. **PR Processing**:
+   - Extract PR details (title, description, files changed)
+   - For quality reviews, extract diff content
+
+2. **Content Analysis**:
+   - Send to Anthropic Claude API with appropriate prompt
+   - For large diffs, chunk content and process each chunk
+
+3. **Response Processing**:
+   - Parse LLM response into structured format
+   - Format suggestions for GitHub comment
+
+4. **Results Posting**:
+   - Post comment on PR with findings
+   - Track PR hashes to avoid duplicate comments

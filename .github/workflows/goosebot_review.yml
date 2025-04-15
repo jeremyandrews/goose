@@ -18,7 +18,10 @@ on:
         description: 'Review scope (clarity, quality, etc.)'
         required: false
         default: 'clarity'
-        type: string
+        type: choice
+        options:
+          - clarity
+          - quality
       force:
         description: 'Force review even if no changes detected'
         required: false
