@@ -76,6 +76,11 @@ Potential future enhancements based on code comments and design patterns:
     - Guidance to enhance existing descriptions rather than replace them
     - Local testing tool with .env support for rapid prompt iteration
     - Provides "no issues found" response when documentation is adequate
+    - Smart change detection to reduce redundant comments:
+      - MD5 hash tracking for PR content changes
+      - Suggestion comparison to avoid duplicate feedback
+      - Force review option for manual overrides
+      - Workflow support for controlling review behavior
     - Production testing successful with concise, meaningful suggestions
   - Phase 2 planned (code quality and style)
   - Phase 3 planned (specialized multi-agent reviews)

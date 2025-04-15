@@ -11,6 +11,7 @@ import sys
 import argparse
 import logging
 import re
+import hashlib
 from typing import Tuple
 import importlib.util
 import pathlib
@@ -52,6 +53,9 @@ from goosebot_review import (
     filter_relevant_files,
     FileFilterConfig,
     TokenUsageTracker,
+    analyze_previous_reviews,
+    extract_suggestions_from_response,
+    needs_new_review,
 )
 from github import Github
 
@@ -91,6 +95,7 @@ def main():
     parser.add_argument("--version", type=str, default="v1", help="Prompt version to use")
     parser.add_argument("--prompt-file", type=str, help="Override with custom prompt file path")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--force", action="store_true", help="Force review even if no changes detected")
     parser.add_argument("--post", action="store_true", help="Allow posting results to GitHub (with confirmation)")
     args = parser.parse_args()
     
@@ -121,6 +126,17 @@ def main():
     repo = g.get_repo(repo_name)
     pr = get_pull_request(repo, pr_number)
     pr_details = get_pr_details(pr)
+    
+    # Analyze previous reviews to see if we've already commented
+    previous_analysis = analyze_previous_reviews(pr)
+    
+    # Calculate current PR hash
+    current_hash = hashlib.md5(f"{pr.title}|{pr.body or ''}".encode()).hexdigest()
+    
+    # Check if we should skip review (but continue for local testing purposes)
+    if previous_analysis['last_hash'] == current_hash and not args.force:
+        logger.warning("In production, this review would be skipped since PR title/description hasn't changed.")
+        logger.info("Continuing for local testing purposes. Use --force to suppress this warning.")
     
     # Filter relevant files
     relevant_files = filter_relevant_files(pr_details['files_changed'], file_filter)
@@ -172,6 +188,23 @@ def main():
     # Call API
     response = call_anthropic_api(prompt, token_tracker)
     
+    # Extract suggestions from the response
+    new_suggestions = extract_suggestions_from_response(response["content"])
+    
+    # Check if we'd skip this comment in production
+    if previous_analysis['previous_suggestions'] and not args.force:
+        if set(new_suggestions) == set(previous_analysis['previous_suggestions']):
+            logger.warning("\n=== SUGGESTION COMPARISON ===")
+            logger.warning("New suggestions identical to previous ones. In production, no new comment would be posted.")
+            
+            logger.info("\nPrevious suggestions:")
+            for suggestion in previous_analysis['previous_suggestions']:
+                logger.info(f"- {suggestion}")
+                
+            logger.info("\nNew suggestions:")
+            for suggestion in new_suggestions:
+                logger.info(f"- {suggestion}")
+    
     # Print response
     logger.info("\n=== GOOSEBOT RESPONSE ===\n")
     logger.info(response["content"])
@@ -182,7 +215,8 @@ def main():
         choice = input().lower()
         if choice == 'y' or choice == 'yes':
             from goosebot_review import post_pr_comment
-            success = post_pr_comment(pr, response["content"])
+            # Post with hash for future change detection
+            success = post_pr_comment(pr, response["content"], current_hash)
             if success:
                 logger.info(f"Comment posted successfully to PR #{pr_number}")
             else:

@@ -34,6 +34,11 @@ Based on the code analysis, potential next steps for the project may include:
   - Added guidance to build upon existing descriptions rather than replacing them
   - Created local testing tool with .env support for faster prompt iteration
   - Added explicit "no issues found" response when PR documentation is adequate
+  - Implemented smart change detection to reduce redundant comments:
+    - MD5 hash tracking of PR title/description for efficient change detection
+    - Suggestion comparison logic to avoid duplicate feedback
+    - Force review option for manual override when needed
+    - Enhanced local testing tool with diagnostic information about changes
   - Additional review scopes planned for future phases (see [aiCodeReviewPlan.md](./aiCodeReviewPlan.md) for full implementation plan)
   - Update Claude model before July 2025 deprecation date
 

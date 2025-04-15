@@ -5,6 +5,8 @@ on:
   # This runs in the context of the base repo instead of the fork
   pull_request_target:
     types: [opened, synchronize, reopened]
+    # Note: The script only posts a new review when PR title/description changes
+    # or when the suggestions would be different from previous comments
   # Manual trigger for testing
   workflow_dispatch:
     inputs:
@@ -17,6 +19,11 @@ on:
         required: false
         default: 'clarity'
         type: string
+      force:
+        description: 'Force review even if no changes detected'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   ai-review:
@@ -76,5 +83,12 @@ jobs:
           echo "ANTHROPIC_API_KEY set: ${{ env.ANTHROPIC_API_KEY != '' }}"
           echo "ANTHROPIC_API_URL set: ${{ env.ANTHROPIC_API_URL != '' }}"
           
+          # Add force flag if specified in workflow dispatch
+          FORCE_ARG=""
+          if [[ "${{ github.event.inputs.force }}" == "true" ]]; then
+            FORCE_ARG="--force"
+            echo "Force flag enabled: Will review even if no changes detected"
+          fi
+          
           # Run the review script
-          python .github/scripts/goosebot_review.py --pr "$PR_NUMBER" --scope "$SCOPE" --debug
+          python .github/scripts/goosebot_review.py --pr "$PR_NUMBER" --scope "$SCOPE" $FORCE_ARG --debug

@@ -11,12 +11,14 @@ import sys
 import argparse
 import logging
 import json
+import re
+import hashlib
 from github import Github
 from github.PullRequest import PullRequest
 import anthropic
 import fnmatch
 import base64
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -356,19 +358,131 @@ def format_files_changed_summary(files: List[Dict[str, Any]]) -> str:
         result += f"- {file['filename']} ({file['status']}, +{file['additions']}, -{file['deletions']})\n"
     return result
 
-def post_pr_comment(pr: PullRequest, comment_text: str) -> bool:
+def analyze_previous_reviews(pr: PullRequest) -> Dict[str, Any]:
+    """
+    Analyze previous GooseBot comments to extract:
+    1. The PR hash that was reviewed
+    2. The suggestions that were made
+    
+    Args:
+        pr: GitHub PullRequest object
+        
+    Returns:
+        dict: {
+            'last_hash': hash string or None,
+            'previous_suggestions': list of suggestion texts or [],
+            'last_comment_id': ID of last comment for potential updating
+        }
+    """
+    comments = pr.get_issue_comments()
+    result = {
+        'last_hash': None,
+        'previous_suggestions': [],
+        'last_comment_id': None
+    }
+    
+    for comment in comments:
+        if comment.user.login == "github-actions[bot]" and "### GooseBot" in comment.body:
+            # Extract hash
+            hash_match = re.search(r'<!-- PR-HASH: ([a-f0-9]+) -->', comment.body)
+            if hash_match:
+                result['last_hash'] = hash_match.group(1)
+            
+            # Extract suggestions
+            if "Title suggestion:" in comment.body:
+                title_match = re.search(r'Title suggestion: (.*?)(?=\n\n|$)', comment.body, re.DOTALL)
+                if title_match:
+                    result['previous_suggestions'].append(title_match.group(1).strip())
+            
+            if "Description enhancement:" in comment.body:
+                desc_match = re.search(r'Description enhancement: (.*?)(?=\n\n|$)', comment.body, re.DOTALL)
+                if desc_match:
+                    result['previous_suggestions'].append(desc_match.group(1).strip())
+            
+            # Keep track of most recent comment ID
+            result['last_comment_id'] = comment.id
+    
+    return result
+
+def extract_suggestions_from_response(response_text: str) -> List[str]:
+    """
+    Extract suggestions from the LLM response.
+    
+    Args:
+        response_text: Text response from the LLM
+        
+    Returns:
+        List of suggestion strings
+    """
+    suggestions = []
+    
+    if "Title suggestion:" in response_text:
+        title_match = re.search(r'Title suggestion: (.*?)(?=\n\n|$)', response_text, re.DOTALL)
+        if title_match:
+            suggestions.append(title_match.group(1).strip())
+    
+    if "Description enhancement:" in response_text:
+        desc_match = re.search(r'Description enhancement: (.*?)(?=\n\n|$)', response_text, re.DOTALL)
+        if desc_match:
+            suggestions.append(desc_match.group(1).strip())
+    
+    return suggestions
+
+def needs_new_review(pr: PullRequest, new_suggestions: List[str], previous_analysis: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    Determine if we need to post a new review by:
+    1. Checking if PR metadata (title/description) has changed
+    2. Checking if our suggestions would be different from previous ones
+    
+    Args:
+        pr: The PR object
+        new_suggestions: List of new suggestions we would make
+        previous_analysis: Result from analyze_previous_reviews()
+        
+    Returns:
+        Tuple: (needs_review, current_hash)
+    """
+    # Calculate current hash
+    current_hash = hashlib.md5(f"{pr.title}|{pr.body or ''}".encode()).hexdigest()
+    
+    # Check if PR metadata changed
+    pr_changed = previous_analysis['last_hash'] is None or previous_analysis['last_hash'] != current_hash
+    
+    # Check if suggestions changed
+    previous_suggestions = previous_analysis['previous_suggestions']
+    suggestions_changed = set(new_suggestions) != set(previous_suggestions)
+    
+    # Need review if either PR or our suggestions changed
+    needs_review = pr_changed or suggestions_changed
+    
+    if not pr_changed:
+        logger.info("PR title and description unchanged since last review.")
+    
+    if not suggestions_changed and previous_suggestions:
+        logger.info("Our suggestions would be the same as before.")
+    
+    return needs_review, current_hash
+
+def post_pr_comment(pr: PullRequest, comment_text: str, pr_hash: str = None) -> bool:
     """
     Post a comment on a pull request.
     
     Args:
         pr: GitHub PullRequest object
         comment_text: Comment text to post
+        pr_hash: Hash of PR title and description to include in hidden comment
         
     Returns:
         True if successful, False otherwise
     """
     try:
-        pr.create_issue_comment(comment_text)
+        # Add hash metadata if provided
+        if pr_hash:
+            comment_with_hash = f"{comment_text}\n<!-- PR-HASH: {pr_hash} -->"
+        else:
+            comment_with_hash = comment_text
+            
+        pr.create_issue_comment(comment_with_hash)
         logger.info(f"Posted comment on PR #{pr.number}")
         return True
     except Exception as e:
@@ -382,6 +496,7 @@ def main():
     parser.add_argument("--scope", type=str, default="clarity", help="Review scope (e.g., clarity)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--version", type=str, default="v1", help="Prompt version to use")
+    parser.add_argument("--force", action="store_true", help="Force review even if no changes detected")
     args = parser.parse_args()
     
     if args.debug:
@@ -412,6 +527,17 @@ def main():
         pr = get_pull_request(repo, args.pr)
         pr_details = get_pr_details(pr)
         
+        # Analyze previous reviews to see if we've already commented
+        previous_analysis = analyze_previous_reviews(pr)
+        
+        # Calculate current PR hash
+        current_hash = hashlib.md5(f"{pr.title}|{pr.body or ''}".encode()).hexdigest()
+        
+        # If PR title/description hasn't changed and we're not forcing a review, skip
+        if previous_analysis['last_hash'] == current_hash and not args.force:
+            logger.info("PR title and description unchanged since last review. Skipping.")
+            return
+        
         # Filter relevant files
         relevant_files = filter_relevant_files(pr_details['files_changed'], file_filter)
         
@@ -440,13 +566,25 @@ def main():
         # Call Anthropic API
         response = call_anthropic_api(prompt, token_tracker)
         
-        # Post comment with review
         if "error" in response["content"].lower():
             logger.error(f"API returned an error: {response['content']}")
             post_pr_comment(pr, f"## GooseBot Error\n\n{response['content']}")
-        else:
-            logger.info("Successfully generated review content")
-            post_pr_comment(pr, response["content"])
+            return
+            
+        # Extract suggestions from the response
+        new_suggestions = extract_suggestions_from_response(response["content"])
+        
+        # Check if we need to post a new comment based on content changes
+        if not args.force:
+            # Compare to previous suggestions
+            previous_suggestions = previous_analysis['previous_suggestions']
+            if set(new_suggestions) == set(previous_suggestions) and previous_suggestions:
+                logger.info("Our suggestions would be the same as before. Skipping comment.")
+                return
+        
+        # If we get here, we need to post a new comment
+        logger.info("Posting new comment with review results")
+        post_pr_comment(pr, response["content"], current_hash)
         
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
