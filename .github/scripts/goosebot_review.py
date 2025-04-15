@@ -285,7 +285,7 @@ def analyze_code_quality(diff_chunks: List[Dict[str, Any]], project_context: str
                 except Exception as e:
                     print(f"Failed to write prompt dump: {e}")
             
-            # Call Anthropic API
+            # Call Anthropic API with enhanced system prompt for JSON formatting
             response = call_anthropic_api(prompt, token_tracker, max_tokens=2000)
             
             # DEBUG - Print entire raw response
@@ -379,6 +379,11 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
                     # Replace newline+indent before "category" with comma
                     json_str = re.sub(r'\n\s*"category"', ',"category"', json_str)
                 
+                # Fix specific Claude JSON malformation where it adds a comma after the opening brace
+                if '{,' in json_str:
+                    print("FIXING SPECIFIC ERROR: Found '{,' pattern in JSON")
+                    json_str = json_str.replace('{,', '{')
+                
                 # Log the JSON content for debugging
                 print(f"JSON STRING (after fixes): {json_str[:200]}...")
                 logger.debug(f"Extracted JSON: {json_str[:100]}...")
@@ -434,15 +439,15 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
                             'impact': 'Unknown'
                         })
             else:
-                # Fallback to extracting suggestions from text format
-                logger.warning(f"Unable to parse JSON from LLM response, using fallback extraction")
-                # Just add the raw analysis as a single suggestion
+                # No JSON found in the response
+                logger.warning(f"No JSON found in response, falling back to text format")
                 all_suggestions.append({
                     'category': 'General Feedback',
                     'description': result['analysis'],
                     'suggestion': 'See description for details.',
                     'impact': 'Unknown'
                 })
+                continue
         except Exception as e:
             logger.error(f"Error parsing suggestions: {e}")
             # Include raw response if parsing fails
@@ -676,11 +681,18 @@ def call_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens
             
         client = anthropic.Anthropic(**client_kwargs)
         
-        # Use Claude Sonnet 3.7 model
+        # Use Claude Sonnet 3.7 model with enhanced JSON instructions if needed
+        system_prompt = "You are GooseBot, an AI assistant that helps with code reviews for the Goose load testing framework. Be concise and helpful."
+        
+        # Add JSON formatting guidance in the system prompt
+        if "structured format" in prompt and "json" in prompt.lower():
+            system_prompt += " When asked to return JSON, ensure it is valid with proper syntax. Use double quotes for keys and string values, avoid trailing commas, and maintain balanced brackets."
+        
+        # Call the API with our parameters
         response = client.messages.create(
             model="claude-3-sonnet-20240229",
             max_tokens=max_tokens,
-            system="You are GooseBot, an AI assistant that helps with code reviews for the Goose load testing framework. Be concise and helpful.",
+            system=system_prompt,
             messages=[
                 {"role": "user", "content": prompt}
             ]

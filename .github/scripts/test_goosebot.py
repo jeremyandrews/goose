@@ -12,7 +12,14 @@ import json
 import argparse
 import tempfile
 from typing import Dict, Any, List
-from dotenv import load_dotenv
+
+# Try to import dotenv, but make it optional
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Define a mock load_dotenv function if dotenv is not available
+    def load_dotenv():
+        print("python-dotenv not installed, skipping .env loading")
 
 # Add the current directory to path to import goosebot_review
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -98,7 +105,7 @@ def create_mock_diff(mock_type: str = "simple") -> Dict[str, str]:
             "src/test.rs": "@@ -1,1 +1,1 @@\n-// Old comment\n+// New comment\n"
         }
     
-def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens: int = 2000) -> Dict[str, Any]:
+def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens: int = 2000, **kwargs) -> Dict[str, Any]:
     """
     Mock the Anthropic API call for testing.
     
@@ -106,6 +113,7 @@ def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens
         prompt: The prompt that would be sent
         token_tracker: TokenUsageTracker instance
         max_tokens: Maximum tokens to generate
+        **kwargs: Other arguments (ignored in mock)
         
     Returns:
         Dictionary with the mocked API response

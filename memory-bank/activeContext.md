@@ -46,6 +46,11 @@ Based on the code analysis, potential next steps for the project may include:
     - Developed JSON-based structured response format for categorized feedback
     - Added suggestion formatting with category, description, and impact
     - Enhanced test script for local testing without GitHub dependencies
+    - Fixed JSON parsing issues in Claude's responses:
+      - Added detection and repair of malformed JSON patterns (specifically `{,` syntax)
+      - Enhanced system prompt to encourage proper JSON formatting
+      - Implemented more robust error handling for better diagnostics 
+      - Improved parsing robustness to handle subtle formatting variations
   - Additional review scopes planned for future phases (see [aiCodeReviewPlan.md](./aiCodeReviewPlan.md) for full implementation plan)
   - Update Claude model before July 2025 deprecation date
 
