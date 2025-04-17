@@ -264,8 +264,10 @@ def analyze_code_quality(diff_chunks: List[Dict[str, Any]], project_context: str
             for filename, diff in chunk['files'].items():
                 files_diff += f"### {filename}\n```diff\n{diff}\n```\n\n"
             
-            # Create the prompt
-            prompt = prompt_template.format(
+            # Create the prompt - use direct string replacement instead of .format()
+            # to avoid issues with curly braces in the template
+            prompt = safe_template_format(
+                prompt_template,
                 project_context=project_context,
                 files_diff=files_diff
             )
@@ -313,21 +315,147 @@ def analyze_code_quality(diff_chunks: List[Dict[str, Any]], project_context: str
     
     return results
 
-def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
+def calculate_line_positions(patch: str) -> Dict[int, int]:
     """
-    Format code suggestions into a well-structured comment.
+    Calculate the position of each line in the patch.
+    Returns a mapping of actual file line numbers to patch positions.
+    """
+    positions = {}
+    lines = patch.split('\n')
+    position = 0
+    current_line = 0
+    in_hunk = False
+    
+    logger.debug(f"Processing patch with {len(lines)} lines")
+    
+    for line in lines:
+        # Parse hunk header
+        if line.startswith('@@'):
+            in_hunk = True
+            match = re.search(r'\@\@ \-\d+,?\d* \+(\d+),?(\d*)', line)
+            if match:
+                current_line = int(match.group(1))
+                logger.debug(f"Found hunk starting at line {current_line}")
+                position += 1
+                continue
+        
+        if not in_hunk:
+            continue
+            
+        # Track position for every line in the patch
+        position += 1
+        
+        # Only map lines that are context or additions (not removals)
+        if not line.startswith('-'):
+            if line.startswith('+'):
+                positions[current_line] = position
+            else:  # Context line
+                positions[current_line] = position
+            current_line += 1
+    
+    logger.debug(f"Created mapping of {len(positions)} line positions")
+    return positions
+
+def find_closest_line(target_line: int, positions: Dict[int, int], max_distance: int = 3) -> Optional[int]:
+    """
+    Find the closest available line in the patch within max_distance.
+    Returns actual line number if found, None if no suitable line is found.
+    """
+    if target_line in positions:
+        return target_line
+        
+    available_lines = sorted(positions.keys())
+    if not available_lines:
+        return None
+        
+    # Find closest line that's within max_distance
+    closest_line = min(available_lines, key=lambda x: abs(x - target_line))
+                      
+    if abs(closest_line - target_line) <= max_distance:
+        return closest_line
+    return None
+
+def extract_suggestions_from_json(json_data) -> List[Dict[str, Any]]:
+    """
+    Recursively extract suggestion objects from JSON data.
+    
+    Args:
+        json_data: JSON data that might contain suggestion objects
+        
+    Returns:
+        List of validated suggestion objects
+    """
+    suggestions = []
+    
+    # If we have a list, process each item
+    if isinstance(json_data, list):
+        for item in json_data:
+            suggestions.extend(extract_suggestions_from_json(item))
+        return suggestions
+        
+    # If we have a dict that looks like a suggestion, validate and add it
+    elif isinstance(json_data, dict):
+        # Check if this looks like a valid suggestion
+        required_fields = ['category', 'description', 'suggestion']
+        has_required = all(field in json_data for field in required_fields)
+        
+        if has_required:
+            # Make a clean copy with validated fields
+            clean_suggestion = {
+                'category': json_data.get('category', 'Unknown Category'),
+                'description': json_data.get('description', 'No description provided'),
+                'suggestion': json_data.get('suggestion', 'No suggestion provided'),
+                'impact': json_data.get('impact', 'Unknown impact'),
+                'file': json_data.get('file', 'Unspecified file'),
+                'line': json_data.get('line', 0)
+            }
+            
+            # Extract file path and line number from description if not already present
+            if not clean_suggestion['file'] or clean_suggestion['file'] == 'Unspecified file':
+                file_line_match = re.search(r'in\s+([^,]+),\s+line\s+(\d+)', clean_suggestion['description'])
+                if file_line_match:
+                    clean_suggestion['file'] = file_line_match.group(1).strip()
+                    clean_suggestion['line'] = int(file_line_match.group(2))
+                    logger.debug(f"Extracted file: {clean_suggestion['file']}, line: {clean_suggestion['line']} from description")
+            
+            # Convert line to int if it's a string number
+            if isinstance(clean_suggestion['line'], str) and clean_suggestion['line'].isdigit():
+                clean_suggestion['line'] = int(clean_suggestion['line'])
+            elif not isinstance(clean_suggestion['line'], int):
+                clean_suggestion['line'] = 0
+                
+            suggestions.append(clean_suggestion)
+            return suggestions
+        
+        # Check if any value contains an embedded JSON array or object
+        for key, value in json_data.items():
+            if isinstance(value, (list, dict)):
+                suggestions.extend(extract_suggestions_from_json(value))
+                
+        return suggestions
+        
+    # For any other type, just return empty list
+    return []
+
+def format_code_suggestions(analysis_results: List[Dict[str, Any]], pr: Optional[PullRequest] = None) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Format code suggestions into a well-structured comment and inline review comments.
     
     Args:
         analysis_results: Results from analyze_code_quality()
+        pr: GitHub PullRequest object (optional)
         
     Returns:
-        Formatted comment string
+        Tuple containing:
+        - Formatted comment string for summary
+        - List of inline review comments for GitHub PR review
     """
     # Check if we have any results
     if not analysis_results:
-        return "### GooseBot Code Quality Review\n\nNo issues found in the code."
+        return "### GooseBot Code Quality Review\n\nNo issues found in the code.", []
     
     comment = "### GooseBot Code Quality Review\n\n"
+    inline_comments = []
     
     # Debug option to dump raw responses
     debug_dump = os.environ.get("GOOSEBOT_DEBUG_DUMP") == "1"
@@ -360,7 +488,7 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
                 # Handle special case for empty array (typo fix PRs)
                 if json_str.strip() == "[[]]":
                     logger.info("Found empty array response [[]] - typo fix PR detected")
-                    return "### GooseBot Code Quality Review\n\nNo issues found. Typo fixes look good!"
+                    return "### GooseBot Code Quality Review\n\nNo issues found. Typo fixes look good!", []
                 
                 # Handle the specific error we're seeing with newlines and formatting
                 if json_str.startswith('\n'):
@@ -389,9 +517,17 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
                 logger.debug(f"Extracted JSON: {json_str[:100]}...")
                 
                 try:
-                    # Attempt to parse the JSON
-                    suggestions = json.loads(json_str)
-                    all_suggestions.extend(suggestions)
+                    # Parse the JSON
+                    parsed_json = json.loads(json_str)
+                    
+                    # Use our extraction function to handle nested JSON and validate
+                    extracted_suggestions = extract_suggestions_from_json(parsed_json)
+                    logger.info(f"Extracted {len(extracted_suggestions)} suggestions from JSON")
+                    all_suggestions.extend(extracted_suggestions)
+                    
+                    # If no suggestions were extracted but we have valid JSON, log a warning
+                    if not extracted_suggestions and parsed_json:
+                        logger.warning("JSON was valid but no suggestion objects were extracted")
                 except json.JSONDecodeError as e:
                     # Better JSON error reporting
                     position = e.pos
@@ -436,26 +572,42 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
                             'category': 'Parsing Error',
                             'description': f"Could not parse structured response: {e}",
                             'suggestion': "Review the raw LLM output:\n\n```\n" + json_str[:500] + "...\n```",
-                            'impact': 'Unknown'
+                            'impact': 'Unknown',
+                            'file': 'Unknown',
+                            'line': 0
                         })
             else:
                 # No JSON found in the response
                 logger.warning(f"No JSON found in response, falling back to text format")
+                # Escape any {} in the raw text by replacing { with {{ and } with }}
+                safe_analysis = result['analysis'].replace('{', '{{').replace('}', '}}')
+                
+                # Create a more informative fallback
+                chunk_info = f"Chunk {i+1}/{len(analysis_results)}"
                 all_suggestions.append({
                     'category': 'General Feedback',
-                    'description': result['analysis'],
+                    'description': safe_analysis,
                     'suggestion': 'See description for details.',
-                    'impact': 'Unknown'
+                    'impact': 'Not specified',
+                    'file': f"Analysis chunk {i+1}",  # More informative than "Unknown"
+                    'line': 0
                 })
                 continue
         except Exception as e:
             logger.error(f"Error parsing suggestions: {e}")
             # Include raw response if parsing fails
+            # Escape any {} in the raw text by replacing { with {{ and } with }}
+            safe_analysis = result['analysis'].replace('{', '{{').replace('}', '}}')
+            
+            error_msg = f"Error parsing chunk {i+1}/{len(analysis_results)}: {e}"
             all_suggestions.append({
                 'category': 'Parsing Error',
-                'description': f"Error parsing suggestions: {e}",
-                'suggestion': result['analysis'][:1000] + ("..." if len(result['analysis']) > 1000 else ""),
-                'impact': 'Unknown'
+                'description': error_msg,
+                'suggestion': "Original content:\n\n```\n" + safe_analysis[:500] + 
+                             ("..." if len(safe_analysis) > 500 else "") + "\n```",
+                'impact': 'Analysis incomplete',
+                'file': f"Error in chunk {i+1}",
+                'line': 0
             })
     
     # Limit to top 5 issues (if more than 5)
@@ -463,7 +615,7 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
         logger.info(f"Limiting from {len(all_suggestions)} to top 5 issues")
         all_suggestions = all_suggestions[:5]
     
-    # Group suggestions by category
+    # Group suggestions by category for the summary comment
     categories = {}
     for suggestion in all_suggestions:
         category = suggestion.get('category', 'General')
@@ -475,13 +627,61 @@ def format_code_suggestions(analysis_results: List[Dict[str, Any]]) -> str:
     for category, suggestions in categories.items():
         comment += f"#### {category}\n\n"
         for suggestion in suggestions:
-            comment += f"**Issue:** {suggestion.get('description', 'No description provided')}\n\n"
+            # Get values with better defaults
+            file_path = suggestion.get('file', 'Unspecified file')
+            
+            # Format the location information differently based on context
+            if file_path.startswith("Error in") or file_path.startswith("Analysis chunk"):
+                # For error entries, make the formatting clearer
+                location_info = file_path
+            else:
+                # For normal entries with a line number
+                line_num = suggestion.get('line', 0)
+                location_info = f"{file_path}, line {line_num}" if line_num > 0 else file_path
+            
+            comment += f"**Issue in {location_info}:** {suggestion.get('description', 'No description provided')}\n\n"
             comment += f"**Suggestion:** {suggestion.get('suggestion', 'No suggestion provided')}\n\n"
-            if 'impact' in suggestion:
-                comment += f"**Impact:** {suggestion['impact']}\n\n"
+            
+            impact = suggestion.get('impact', 'Unknown')
+            if impact != 'Unknown' and impact != 'Not specified':
+                comment += f"**Impact:** {impact}\n\n"
+            
             comment += "---\n\n"
     
-    return comment
+            # Now prepare inline comments for the PR review
+    for suggestion in all_suggestions:
+        file_path = suggestion.get('file')
+        line_num = suggestion.get('line')
+        
+        # Only add inline comments for actual files with valid line numbers
+        # Don't add inline comments for error entries or analysis chunks
+        if (file_path and 
+            line_num and 
+            not file_path.startswith("Error in") and 
+            not file_path.startswith("Analysis chunk")):
+            
+            # Format the comment body with suggestion syntax for GitHub
+            code_suggestion = suggestion.get('suggestion', '')
+            category = suggestion.get('category', 'Issue')
+            description = suggestion.get('description', '')
+            impact = suggestion.get('impact', 'Unknown')
+            
+            comment_body = f"**{category}:** {description}\n\n"
+            if impact and impact not in ['Unknown', 'Not specified']:
+                comment_body += f"**Impact:** {impact}\n\n"
+                
+            # Only add the suggestion block if there's actual code to suggest
+            if code_suggestion and not code_suggestion.startswith('See description'):
+                comment_body += f"```suggestion\n{code_suggestion}\n```"
+            
+            # These will be processed later to find the correct position in the diff
+            inline_comments.append({
+                'file': file_path,
+                'line': int(line_num) if isinstance(line_num, (int, str)) and str(line_num).isdigit() else 0,
+                'body': comment_body
+            })
+    
+    return comment, inline_comments
 
 def gather_project_context() -> str:
     """
@@ -516,6 +716,40 @@ def gather_project_context() -> str:
         logger.warning("No context files found in memory-bank/")
         
     return context
+
+def safe_template_format(template: str, **kwargs) -> str:
+    """
+    Safely format a template string with placeholders.
+    Uses simple string replacement instead of .format() to avoid
+    issues with curly braces in the template.
+    
+    Args:
+        template: The template string with {placeholder} style placeholders
+        **kwargs: Key-value pairs where key matches a {key} in the template
+        
+    Returns:
+        Formatted string with placeholders replaced by values
+    """
+    try:
+        result = template
+        for key, value in kwargs.items():
+            placeholder = "{" + key + "}"
+            # Convert value to string if it's not already
+            str_value = str(value) if value is not None else ""
+            result = result.replace(placeholder, str_value)
+        return result
+    except Exception as e:
+        logger.error(f"Error in safe_template_format: {e}")
+        # Fallback to simple replacement for required placeholders
+        fallback = template
+        for key, value in kwargs.items():
+            try:
+                placeholder = "{" + key + "}"
+                str_value = str(value) if value is not None else ""
+                fallback = fallback.replace(placeholder, str_value)
+            except:
+                pass
+        return fallback
 
 def load_prompt_template(scope: str, version: str = "v1") -> str:
     """
@@ -862,6 +1096,100 @@ def post_pr_comment(pr: PullRequest, comment_text: str, pr_hash: str = None) -> 
         logger.error(f"Failed to post comment: {e}")
         return False
 
+def submit_inline_review_comments(pr: PullRequest, inline_comments: List[Dict[str, Any]], summary_comment: str) -> bool:
+    """
+    Submit inline review comments on the PR.
+    
+    Args:
+        pr: GitHub PullRequest object
+        inline_comments: List of comment dictionaries with file, line, and body
+        summary_comment: Summary comment to include in the review
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        logger.info(f"Preparing to submit {len(inline_comments)} inline comments")
+        
+        # Get the files in the PR
+        files = pr.get_files()
+        file_patches = {}
+        
+        # Map file paths to their patches
+        for file in files:
+            if file.patch:
+                file_patches[file.filename] = file.patch
+                
+        # Process each inline comment to find correct positions
+        github_review_comments = []
+        general_comments = []
+        
+        for comment in inline_comments:
+            file_path = comment['file']
+            line_num = comment['line']
+            
+            if file_path in file_patches:
+                # Calculate line positions in the patch
+                patch = file_patches[file_path]
+                line_positions = calculate_line_positions(patch)
+                
+                # Find the closest line in the patch
+                mapped_line = find_closest_line(line_num, line_positions)
+                
+                if mapped_line is not None:
+                    position = line_positions[mapped_line]
+                    logger.info(f"Mapped comment from line {line_num} to position {position} in patch")
+                    
+                    github_review_comments.append({
+                        'path': file_path,
+                        'position': position,
+                        'body': comment['body']
+                    })
+                else:
+                    # Couldn't map to a position in the diff, add to general comments
+                    logger.warning(f"Couldn't map line {line_num} in {file_path} to a position in the diff")
+                    general_comments.append(f"**In {file_path}, line {line_num}:**\n\n{comment['body']}")
+            else:
+                # File not found in the PR files
+                logger.warning(f"File {file_path} not found in PR files")
+                general_comments.append(f"**In {file_path}, line {line_num}:**\n\n{comment['body']}")
+        
+        # Since we already include all comments in the summary comment, 
+        # we don't need to add the general comments again, as this causes duplications
+        enhanced_summary = summary_comment
+        
+        # Create the review
+        if github_review_comments:
+            logger.info(f"Creating review with {len(github_review_comments)} inline comments")
+            try:
+                commit = pr.get_commits().reversed[0] # Get the latest commit
+                pr.create_review(
+                    commit=commit,
+                    comments=github_review_comments,
+                    body=enhanced_summary,
+                    event="COMMENT"
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Error creating review: {e}")
+                # Fall back to regular comment
+                post_pr_comment(pr, enhanced_summary)
+                return True
+        else:
+            # Fall back to regular comment if no inline comments could be created
+            logger.warning("No inline comments could be created, falling back to regular comment")
+            post_pr_comment(pr, enhanced_summary)
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error creating inline review: {e}")
+        # Try to post as a regular comment as fallback
+        try:
+            post_pr_comment(pr, summary_comment + "\n\n(Error creating inline comments)")
+            return True
+        except:
+            return False
+
 def main():
     """Main function to run the GooseBot review process."""
     parser = argparse.ArgumentParser(description="GooseBot PR Review")
@@ -870,6 +1198,10 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--version", type=str, default="v1", help="Prompt version to use")
     parser.add_argument("--force", action="store_true", help="Force review even if no changes detected")
+    parser.add_argument("--inline", dest="inline", action="store_true", default=True, 
+                        help="Use inline comments for code review (default)")
+    parser.add_argument("--no-inline", dest="inline", action="store_false", 
+                        help="Disable inline comments, use traditional comment style")
     args = parser.parse_args()
     
     if args.debug:
@@ -946,18 +1278,24 @@ def main():
             # Analyze code quality
             analysis_results = analyze_code_quality(diff_chunks, project_context, token_tracker)
             
-            # Format suggestions
-            comment_text = format_code_suggestions(analysis_results)
+            # Format suggestions - now returns both a comment and inline comments
+            comment_text, inline_comments = format_code_suggestions(analysis_results, pr)
             
-            # Post comment
-            logger.info("Posting code quality review comment")
-            post_pr_comment(pr, comment_text, current_hash)
+            # Post review - use inline comments if enabled, fall back to regular comment
+            if args.inline and inline_comments:
+                logger.info("Posting inline code quality review comments")
+                submit_inline_review_comments(pr, inline_comments, comment_text)
+            else:
+                # Post regular comment as before
+                logger.info("Posting code quality review comment")
+                post_pr_comment(pr, comment_text, current_hash)
         else:
             # Original clarity review code
             logger.info("Performing clarity review")
             
-            # Format the prompt
-            prompt = prompt_template.format(
+            # Format the prompt using our safe template formatter to avoid curly brace issues
+            prompt = safe_template_format(
+                prompt_template,
                 project_context=project_context,
                 pr_title=pr_details['title'],
                 pr_description=pr_details['description'],

@@ -1,117 +1,89 @@
-# GooseBot - AI-Assisted Code Review Bot
+# GooseBot PR Review System
 
-GooseBot is an AI-assisted code review tool for the Goose load testing framework. It provides automated, consistent feedback on pull requests to complement human reviewers.
+This directory contains scripts for Goose's automated PR review system powered by Anthropic's Claude API.
+
+## Components
+
+- `goosebot_review.py` - Main script for analyzing PRs and posting reviews
+- `test_goosebot.py` - Testing script for local development without GitHub dependencies
 
 ## Features
 
-### Phase 1: PR Clarity Reviews
-- Evaluates PR title and description clarity
-- Provides conceptual suggestions that enhance understanding
-- Focuses on explaining the purpose and value of changes
-- Maintains concise, actionable feedback (maximum 2 issues)
+GooseBot currently supports two review types:
 
-### Phase 2: Code Quality Reviews
-- Analyzes PR code diffs for quality and best practices
-- Focuses on Rust best practices and idiomatic code
-- Provides categorized feedback with impact assessment
-- Handles large PRs with automatic chunking
-- Returns structured, actionable suggestions
+### Clarity Review
+- Analyzes PR title and description
+- Suggests improvements for clarity and completeness
+- Uses structured text format for responses
+
+### Quality Review
+- Analyzes code changes in PR diffs
+- Evaluates against Rust best practices
+- Provides categorized suggestions using JSON structure
+- Focuses on error handling, performance, safety, etc.
+
+## JSON Response Format
+
+The quality review generates a structured JSON response:
+
+```json
+[
+  {
+    "category": "Error Handling",
+    "description": "Issue description",
+    "suggestion": "Suggested improvement",
+    "impact": "High/Medium/Low - impact explanation"
+  }
+]
+```
+
+This structure allows for:
+- Consistent formatting of suggestions
+- Easy categorization of issues
+- Clear impact assessments
+- Potential future automation based on categories
 
 ## Usage
 
-### GitHub Workflow
+### GitHub Actions Workflow
 
-GooseBot runs automatically on pull requests, or can be triggered manually:
-
-1. **Automatic**: GooseBot will run on any PR when:
-   - A new PR is opened
-   - A PR is updated
-   - A PR is reopened
-
-2. **Manual**: Trigger from the Actions tab:
-   - Select "GooseBot PR Review" workflow
-   - Enter PR number
-   - Select review scope: "clarity" or "quality"
-   - Optionally check "Force review"
+The review is automatically triggered by:
+- Opening a new PR
+- Updating an existing PR
+- Manual triggering via workflow_dispatch
 
 ### Local Testing
 
-For local development and testing without requiring a real GitHub PR:
+For local development or testing:
 
 ```bash
-# Install dependencies
-pip install python-dotenv anthropic==0.45.2
+# Install dependencies (one-time setup)
+pip install anthropic==0.45.2 PyGithub==2.6.0 python-dotenv
 
-# Test with a real PR (GitHub API)
-python .github/scripts/test_goosebot.py --pr 618
+# Create .env file with API keys
+echo "ANTHROPIC_API_KEY=your_key_here" > .env
 
-# Test with a real PR using clarity scope
-python .github/scripts/test_goosebot.py --pr 618 --scope clarity
-
-# Test with mock data
+# Run tests with mock data
 python .github/scripts/test_goosebot.py --mock simple
 
-# Test with different mock data types
-python .github/scripts/test_goosebot.py --mock large
-python .github/scripts/test_goosebot.py --mock error
-
-# Test chunking functionality
-python .github/scripts/test_goosebot.py --test-chunks
-
-# Test with real API (requires .env file with ANTHROPIC_API_KEY)
-python .github/scripts/test_goosebot.py --mock simple --use-real-api
-python .github/scripts/test_goosebot.py --pr 618 --use-real-api
-
-# Test with a custom diff file
-python .github/scripts/test_goosebot.py --mock custom --custom-file path/to/diff.patch
-
-# Force review of a PR even if no changes detected since last review
-python .github/scripts/test_goosebot.py --pr 618 --force
-```
-
-For real API testing, create a `.env` file with:
-```
-ANTHROPIC_API_KEY=your_api_key_here
+# Test against a real PR (view-only, doesn't post comments)
+python .github/scripts/test_goosebot.py --pr 123 --scope quality
 ```
 
 ## Configuration
 
-### File Filtering
+The system supports various configuration options:
 
-Set environment variables in the workflow file:
-```yaml
-PR_REVIEW_WHITELIST: "*.rs,*.md,*.py,*.toml,*.yml,*.yaml"
-PR_REVIEW_BLACKLIST: "tests/*,benches/*,target/*"
-```
+- File filtering via environment variables:
+  - `PR_REVIEW_WHITELIST`: Comma-separated glob patterns for files to include
+  - `PR_REVIEW_BLACKLIST`: Comma-separated glob patterns for files to exclude
+  
+- Token budget management via `TOKEN_BUDGET` environment variable
+  
+- Debug mode with `GOOSEBOT_DEBUG_DUMP=1` for saving prompts and responses
 
-### Token Budget
+## Implementation Notes
 
-Control API token usage with:
-```yaml
-TOKEN_BUDGET: "100000"
-```
-
-## Prompt Templates
-
-Prompts are stored in `.github/prompts/{version}/{scope}_review.md`:
-
-- `v1/clarity_review.md`: Evaluates PR title and description clarity
-- `v1/quality_review.md`: Analyzes code quality and best practices
-
-## Architecture
-
-1. **PR Processing**:
-   - Extract PR details (title, description, files changed)
-   - For quality reviews, extract diff content
-
-2. **Content Analysis**:
-   - Send to Anthropic Claude API with appropriate prompt
-   - For large diffs, chunk content and process each chunk
-
-3. **Response Processing**:
-   - Parse LLM response into structured format
-   - Format suggestions for GitHub comment
-
-4. **Results Posting**:
-   - Post comment on PR with findings
-   - Track PR hashes to avoid duplicate comments
+- Large diffs are automatically chunked to fit within context limits
+- JSON parsing includes fallback mechanisms for handling LLM formatting quirks
+- Hash-based change detection prevents duplicate reviews of unchanged content

@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      inline:
+        description: 'Use inline comments for code quality reviews'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   ai-review:
@@ -86,12 +91,22 @@ jobs:
           echo "ANTHROPIC_API_KEY set: ${{ env.ANTHROPIC_API_KEY != '' }}"
           echo "ANTHROPIC_API_URL set: ${{ env.ANTHROPIC_API_URL != '' }}"
           
-          # Add force flag if specified in workflow dispatch
-          FORCE_ARG=""
+          # Add flags based on workflow dispatch inputs
+          ARGS="--pr $PR_NUMBER --scope $SCOPE --debug"
+          
+          # Add force flag if specified
           if [[ "${{ github.event.inputs.force }}" == "true" ]]; then
-            FORCE_ARG="--force"
+            ARGS="$ARGS --force"
             echo "Force flag enabled: Will review even if no changes detected"
           fi
           
+          # Add inline flag based on input (default is true)
+          if [[ "${{ github.event.inputs.inline }}" == "false" ]]; then
+            ARGS="$ARGS --no-inline"
+            echo "Inline comments disabled: Using traditional comment style"
+          else
+            echo "Inline comments enabled: Will post comments directly on code lines"
+          fi
+          
           # Run the review script
-          python .github/scripts/goosebot_review.py --pr "$PR_NUMBER" --scope "$SCOPE" $FORCE_ARG --debug
+          python .github/scripts/goosebot_review.py $ARGS

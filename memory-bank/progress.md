@@ -86,10 +86,15 @@ Potential future enhancements based on code comments and design patterns:
     - Quality review prompt template focusing on Rust best practices
     - PR diff extraction and analysis functionality
     - Automatic chunking for large diffs with preserved context
-    - JSON-structured responses for consistent feedback format
+    - JSON-structured responses for consistent feedback format:
+      - Standardized structure with category, description, suggestion, and impact fields
+      - Consistent output formatting for GitHub comment rendering
+      - Improved error handling for JSON parsing issues
+      - Fallback parsing for handling malformed LLM responses
     - Categorized suggestions with impact assessments
     - Enhanced testing tools with mock APIs for local development
     - Workflow support for selecting review scope (clarity/quality)
+    - Documentation for JSON structure and integration process
     - **Current Challenge**: Despite explicit instructions, Claude not correctly identifying typo fix PRs
       - Added clear diff format explanations (- removed, + added)
       - Created explicit examples of typo fixes with expected responses

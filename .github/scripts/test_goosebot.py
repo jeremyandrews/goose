@@ -126,8 +126,10 @@ def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens
   {
     "category": "Safety",
     "description": "Dereferencing a null pointer causes undefined behavior and will crash the program",
-    "suggestion": "Remove this unsafe code or replace with a safe alternative. Consider using Option<T> or properly checking pointers before dereferencing",
-    "impact": "High - prevents program crashes and security vulnerabilities"
+    "suggestion": "// Use a safer approach like Option<T>\nlet value = None::<i32>;",
+    "impact": "High - prevents program crashes and security vulnerabilities",
+    "file": "src/error.rs",
+    "line": 3
   }
 ]
 ```"""
@@ -138,8 +140,10 @@ def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens
   {
     "category": "Error Handling",
     "description": "Using map_err to convert error types is verbose and repetitive across the codebase",
-    "suggestion": "Consider creating a custom error type with the From trait to handle conversions automatically",
-    "impact": "Medium - improves code readability and maintainability"
+    "suggestion": "let value = compute_value()?;",
+    "impact": "Medium - improves code readability and maintainability",
+    "file": "src/large_file.rs",
+    "line": 5
   }
 ]
 ```"""
@@ -150,14 +154,18 @@ def mock_anthropic_api(prompt: str, token_tracker: TokenUsageTracker, max_tokens
   {
     "category": "Error Handling",
     "description": "Using String as an error type is limiting and doesn't provide enough context",
-    "suggestion": "Consider using thiserror or defining a custom error enum with specific variants",
-    "impact": "Medium - improves error handling and context"
+    "suggestion": "fn process_data(input: &str) -> Result<HashMap<String, u32>, ProcessError>",
+    "impact": "Medium - improves error handling and context",
+    "file": "src/example.rs",
+    "line": 4
   },
   {
     "category": "Performance",
     "description": "Creating a new String for each key is inefficient",
-    "suggestion": "Consider using references where appropriate to avoid unnecessary allocations",
-    "impact": "Low - reduces memory usage slightly"
+    "suggestion": "let key = parts[0];",
+    "impact": "Low - reduces memory usage slightly",
+    "file": "src/example.rs",
+    "line": 12
   }
 ]
 ```"""
@@ -209,16 +217,30 @@ def test_quality_review(mock_type: str = "simple") -> None:
         analysis_results = analyze_code_quality(diff_chunks, project_context, token_tracker)
         print(f"Generated {len(analysis_results)} analysis results")
         
-        # Format suggestions
-        comment = format_code_suggestions(analysis_results)
+        # Format suggestions - now returns both a comment and inline comments
+        comment, inline_comments = format_code_suggestions(analysis_results)
         print("\n=== FORMATTED COMMENT ===\n")
         print(comment)
         print("\n=== END COMMENT ===\n")
+        
+        if inline_comments:
+            print(f"\n=== INLINE COMMENTS ({len(inline_comments)}) ===\n")
+            for i, comment in enumerate(inline_comments):
+                print(f"Comment {i+1} for {comment['file']}, line {comment['line']}:")
+                print(comment['body'])
+                print("---")
+            print("\n=== END INLINE COMMENTS ===\n")
         
         # Save to temp file for review
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as f:
             f.write(comment)
             print(f"Saved comment to {f.name}")
+            
+        # Save inline comments if any
+        if inline_comments:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+                json.dump(inline_comments, f, indent=2)
+                print(f"Saved inline comments to {f.name}")
     finally:
         # Restore original function
         globals()["call_anthropic_api"] = original_call
@@ -338,16 +360,30 @@ def main() -> None:
         analysis_results = analyze_code_quality(diff_chunks, project_context, token_tracker)
         print(f"Generated {len(analysis_results)} analysis results")
         
-        # Format suggestions
-        comment = format_code_suggestions(analysis_results)
+        # Format suggestions - now returns both a comment and inline comments
+        comment, inline_comments = format_code_suggestions(analysis_results)
         print("\n=== FORMATTED COMMENT ===\n")
         print(comment)
         print("\n=== END COMMENT ===\n")
+        
+        if inline_comments:
+            print(f"\n=== INLINE COMMENTS ({len(inline_comments)}) ===\n")
+            for i, comment in enumerate(inline_comments):
+                print(f"Comment {i+1} for {comment['file']}, line {comment['line']}:")
+                print(comment['body'])
+                print("---")
+            print("\n=== END INLINE COMMENTS ===\n")
         
         # Save to temp file for review
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md') as f:
             f.write(comment)
             print(f"Saved comment to {f.name}")
+            
+        # Save inline comments if any
+        if inline_comments:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+                json.dump(inline_comments, f, indent=2)
+                print(f"Saved inline comments to {f.name}")
     finally:
         # Restore original function if patched
         if not args.use_real_api:

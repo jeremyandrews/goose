@@ -36,6 +36,8 @@ STRICT OUTPUT FORMAT - YOU MUST FOLLOW THESE RULES EXACTLY:
 3. DO NOT USE EXTRANEOUS SENTENCES LIKE "I hope this helps"
 4. FOCUS ONLY ON IMPORTANT ISSUES - MAXIMUM 5 ISSUES
 5. DO NOT ADD SECTIONS NOT SHOWN IN THE TEMPLATE
+6. ALWAYS INCLUDE THE FILE PATH AND LINE NUMBER FOR EACH ISSUE
+7. PROVIDE SPECIFIC CODE SUGGESTIONS FOR IMPROVEMENTS
 
 - Return exactly one JSON array of issues in the specified format
 
@@ -52,14 +54,18 @@ IF YOU DO IDENTIFY PROBLEMS INTRODUCED BY THE DIFF, RETURN VALID JSON IN EXACTLY
   {{
     "category": "Error Handling",
     "description": "Using unwrap() on Result can cause panics in production",
-    "suggestion": "Consider proper error handling with pattern matching or the ? operator",
-    "impact": "High - prevents runtime crashes"
+    "suggestion": "handle_input().map_err(|e| format!(\"Error: {}\", e))?",
+    "impact": "High - prevents runtime crashes",
+    "file": "src/example.rs",
+    "line": 42
   }},
   {{
     "category": "Performance",
     "description": "Cloning the entire vector is inefficient",
-    "suggestion": "Use references or iterators instead of clone() when possible",
-    "impact": "Medium - reduces memory usage and improves speed for large collections"
+    "suggestion": "for item in &values {",
+    "impact": "Medium - reduces memory usage and improves speed for large collections",
+    "file": "src/utils.rs",
+    "line": 23
   }}
 ]
 ```
@@ -72,3 +78,4 @@ IMPORTANT FORMATTING RULES:
 - Properly escape any special characters in strings
 - Ensure the entire response is a valid JSON array
 - If no issues are found, return an empty array: [[]]
+- ALWAYS include the "file" and "line" properties for each issue

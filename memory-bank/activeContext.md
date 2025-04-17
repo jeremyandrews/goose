@@ -43,7 +43,11 @@ Based on the code analysis, potential next steps for the project may include:
     - Created quality review prompt template focusing on Rust best practices
     - Added support for extracting PR diff content for analysis
     - Implemented automatic chunking for large diffs
-    - Developed JSON-based structured response format for categorized feedback
+    - Developed JSON-based structured response format for categorized feedback:
+      - Standardized output schema with category, description, suggestion, and impact fields
+      - Comprehensive error handling for malformed JSON responses
+      - Fallback parsing mechanisms for handling LLM output variations
+      - Special handling for empty response cases (e.g., typo fix PRs)
     - Added suggestion formatting with category, description, and impact
     - Enhanced test script for local testing without GitHub dependencies
     - Fixed JSON parsing issues in Claude's responses:
@@ -51,6 +55,28 @@ Based on the code analysis, potential next steps for the project may include:
       - Enhanced system prompt to encourage proper JSON formatting
       - Implemented more robust error handling for better diagnostics 
       - Improved parsing robustness to handle subtle formatting variations
+    - Added inline PR review comments support:
+      - Updated quality review prompt to include file path and line number information
+      - Implemented position mapping between file lines and diff positions
+      - Created draft review comment functionality on specific lines of code
+      - Added suggestion formatting using GitHub's suggestion syntax
+      - Enhanced error handling with fallback to general comments when lines can't be mapped
+      - Updated test script to support testing inline comments functionality
+    - Improved string formatting robustness:
+      - Created a safe template formatter that avoids Python string formatting issues
+      - Replaced Python's `.format()` method with direct string replacement
+      - Added proper error handling for template processing
+      - Fixed issues with curly braces in JSON examples
+      - Improved error reporting with better context
+      - Added consistent default values for missing fields
+    - Enhanced JSON parsing and formatting:
+      - Added recursive JSON extraction function to handle nested JSON structures
+      - Implemented proper validation of suggestion objects
+      - Added more descriptive context for error entries
+      - Improved formatting of issues with unknown locations
+      - Fixed issue with raw JSON appearing in comment output
+      - Added better fallback handling for partial parsing
+    - Created comprehensive documentation explaining the JSON structure integration
   - Additional review scopes planned for future phases (see [aiCodeReviewPlan.md](./aiCodeReviewPlan.md) for full implementation plan)
   - Update Claude model before July 2025 deprecation date
 
