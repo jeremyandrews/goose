@@ -109,8 +109,8 @@ impl<W: Write> Markdown<'_, '_, W> {
             r#"
 ## Request Metrics
 
-| Method | Name | # Requests | # Fails | Average (ms) | Min (ms) | Max (ms) | RPS | Failures/s |
-| ------ | ---- | ---------: | ------: | -----------: | -------: | -------: | --: | ---------: |
+| Method | Name | # Requests | # Fails | Avg TTFB (ms) | Avg Response (ms) | Min TTFB | Max TTFB | Min Response | Max Response | RPS | Failures/s |
+| ------ | ---- | ---------: | ------: | -------------: | ----------------: | -------: | -------: | -----------: | -----------: | --: | ---------: |
 "#
         )?;
 
@@ -122,13 +122,16 @@ impl<W: Write> Markdown<'_, '_, W> {
             response_time_average,
             response_time_minimum,
             response_time_maximum,
+            ttfb_average,
+            ttfb_minimum,
+            ttfb_maximum,
             requests_per_second,
             failures_per_second,
         } in &self.data.raw_request_metrics
         {
             writeln!(
                 self.w,
-                r#"| {method} | {name} | {number_of_requests} | {number_of_failures } | {response_time_average:.2 } | {response_time_minimum} | {response_time_maximum} | {requests_per_second:.2} | {failures_per_second:.2} |"#,
+                r#"| {method} | {name} | {number_of_requests} | {number_of_failures } | {ttfb_average:.2} | {response_time_average:.2 } | {ttfb_minimum} | {ttfb_maximum} | {response_time_minimum} | {response_time_maximum} | {requests_per_second:.2} | {failures_per_second:.2} |"#,
             )?;
         }
 
@@ -157,6 +160,7 @@ impl<W: Write> Markdown<'_, '_, W> {
             percentile_95,
             percentile_99,
             percentile_100,
+            ..
         } in &self.data.raw_response_metrics
         {
             writeln!(

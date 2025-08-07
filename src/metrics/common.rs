@@ -51,9 +51,16 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
     let mut raw_aggregate_response_time_minimum: usize = 0;
     let mut raw_aggregate_response_time_maximum: usize = 0;
     let mut raw_aggregate_response_times: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut raw_aggregate_ttfb_times: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut raw_aggregate_ttfb_total_time: usize = 0;
+    let mut raw_aggregate_ttfb_minimum_time: usize = 0;
+    let mut raw_aggregate_ttfb_maximum_time: usize = 0;
     let mut co_aggregate_response_time_counter: usize = 0;
     let mut co_aggregate_response_time_maximum: usize = 0;
     let mut co_aggregate_response_times: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut co_aggregate_ttfb_times: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut co_aggregate_ttfb_minimum_time: usize = 0;
+    let mut co_aggregate_ttfb_maximum_time: usize = 0;
     let mut co_data = false;
 
     for (request_key, request) in metrics.requests.iter().sorted() {
@@ -71,6 +78,13 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
         let total_request_count = request.success_count + request.fail_count;
         let (requests_per_second, failures_per_second) =
             per_second_calculations(metrics.duration, total_request_count, request.fail_count);
+        // Calculate TTFB average
+        let ttfb_average = if request.raw_data.counter > 0 {
+            request.raw_data.ttfb_total_time as f32 / request.raw_data.counter as f32
+        } else {
+            0.0
+        };
+
         // Prepare per-request metrics.
         raw_request_metrics.push(report::RequestMetric {
             method: method.to_string(),
@@ -81,6 +95,9 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
                 / request.raw_data.counter as f32,
             response_time_minimum: request.raw_data.minimum_time,
             response_time_maximum: request.raw_data.maximum_time,
+            ttfb_average,
+            ttfb_minimum: request.raw_data.ttfb_minimum_time,
+            ttfb_maximum: request.raw_data.ttfb_maximum_time,
             requests_per_second,
             failures_per_second,
         });
@@ -90,9 +107,12 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
             &method,
             &name,
             &request.raw_data.times,
+            &request.raw_data.ttfb_times,
             request.raw_data.counter,
             request.raw_data.minimum_time,
             request.raw_data.maximum_time,
+            request.raw_data.ttfb_minimum_time,
+            request.raw_data.ttfb_maximum_time,
         ));
 
         // Collect aggregated request and response metrics.
@@ -109,6 +129,20 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
         );
         raw_aggregate_response_times =
             merge_times(raw_aggregate_response_times, request.raw_data.times.clone());
+        // Collect aggregated TTFB metrics.
+        raw_aggregate_ttfb_total_time += request.raw_data.ttfb_total_time;
+        raw_aggregate_ttfb_minimum_time = update_min_time(
+            raw_aggregate_ttfb_minimum_time,
+            request.raw_data.ttfb_minimum_time,
+        );
+        raw_aggregate_ttfb_maximum_time = update_max_time(
+            raw_aggregate_ttfb_maximum_time,
+            request.raw_data.ttfb_maximum_time,
+        );
+        raw_aggregate_ttfb_times = merge_times(
+            raw_aggregate_ttfb_times,
+            request.raw_data.ttfb_times.clone(),
+        );
     }
 
     // Prepare aggregate per-request metrics.
@@ -127,6 +161,13 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
             / raw_aggregate_total_count as f32,
         response_time_minimum: raw_aggregate_response_time_minimum,
         response_time_maximum: raw_aggregate_response_time_maximum,
+        ttfb_average: if raw_aggregate_total_count > 0 {
+            raw_aggregate_ttfb_total_time as f32 / raw_aggregate_total_count as f32
+        } else {
+            0.0
+        },
+        ttfb_minimum: raw_aggregate_ttfb_minimum_time,
+        ttfb_maximum: raw_aggregate_ttfb_maximum_time,
         requests_per_second: raw_aggregate_requests_per_second,
         failures_per_second: raw_aggregate_failures_per_second,
     });
@@ -136,9 +177,12 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
         "",
         "Aggregated",
         &raw_aggregate_response_times,
+        &raw_aggregate_ttfb_times,
         raw_aggregate_total_count,
         raw_aggregate_response_time_minimum,
         raw_aggregate_response_time_maximum,
+        raw_aggregate_ttfb_minimum_time,
+        raw_aggregate_ttfb_maximum_time,
     ));
 
     let (co_request_metrics, co_response_metrics) = if co_data {
@@ -172,9 +216,12 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
                     &method,
                     &name,
                     &coordinated_omission_data.times,
+                    &coordinated_omission_data.ttfb_times,
                     coordinated_omission_data.counter,
                     coordinated_omission_data.minimum_time,
                     coordinated_omission_data.maximum_time,
+                    coordinated_omission_data.ttfb_minimum_time,
+                    coordinated_omission_data.ttfb_maximum_time,
                 ));
 
                 // Collect aggregated request and response metrics.
@@ -186,6 +233,19 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
                 co_aggregate_response_times = merge_times(
                     co_aggregate_response_times,
                     coordinated_omission_data.times.clone(),
+                );
+                // Collect aggregated CO TTFB metrics.
+                co_aggregate_ttfb_minimum_time = update_min_time(
+                    co_aggregate_ttfb_minimum_time,
+                    coordinated_omission_data.ttfb_minimum_time,
+                );
+                co_aggregate_ttfb_maximum_time = update_max_time(
+                    co_aggregate_ttfb_maximum_time,
+                    coordinated_omission_data.ttfb_maximum_time,
+                );
+                co_aggregate_ttfb_times = merge_times(
+                    co_aggregate_ttfb_times,
+                    coordinated_omission_data.ttfb_times.clone(),
                 );
             }
             let total_request_count = request.success_count + request.fail_count;
@@ -209,9 +269,12 @@ pub fn prepare_data(options: ReportOptions, metrics: &GooseMetrics) -> ReportDat
             "",
             "Aggregated",
             &co_aggregate_response_times,
+            &co_aggregate_ttfb_times,
             co_aggregate_total_count,
             raw_aggregate_response_time_minimum,
             co_aggregate_response_time_maximum,
+            co_aggregate_ttfb_minimum_time,
+            co_aggregate_ttfb_maximum_time,
         ));
 
         (Some(co_request_metrics), Some(co_response_metrics))

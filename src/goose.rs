@@ -1643,9 +1643,16 @@ impl GooseUser {
             self.weighted_users_index,
         );
 
-        // Make the actual request.
+        // Make the actual request
         let response = self.client.execute(built_request).await;
-        request_metric.set_response_time(started.elapsed().as_millis());
+        
+        // Record TTFB (Time to First Byte) - this is when we first receive response headers
+        // With reqwest, the response object is available as soon as headers are received
+        let ttfb_time = started.elapsed().as_millis() as u64;
+        request_metric.time_to_first_byte = ttfb_time;
+
+        // Set response time to TTFB initially - this will be updated when the response body is consumed
+        request_metric.set_response_time(ttfb_time as u128);
 
         // Determine if the request suceeded or failed.
         match &response {

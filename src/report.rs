@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub(crate) struct GooseReportTemplates<'a> {
     pub raw_requests_template: &'a str,
+    pub raw_ttfb_template: &'a str,
     pub raw_responses_template: &'a str,
     pub co_requests_template: &'a str,
     pub co_responses_template: &'a str,
@@ -38,6 +39,9 @@ pub(crate) struct RequestMetric {
     pub response_time_average: f32,
     pub response_time_minimum: usize,
     pub response_time_maximum: usize,
+    pub ttfb_average: f32,
+    pub ttfb_minimum: usize,
+    pub ttfb_maximum: usize,
     pub requests_per_second: f32,
     pub failures_per_second: f32,
 }
@@ -65,6 +69,14 @@ pub(crate) struct ResponseMetric {
     pub percentile_95: usize,
     pub percentile_99: usize,
     pub percentile_100: usize,
+    pub ttfb_percentile_50: usize,
+    pub ttfb_percentile_60: usize,
+    pub ttfb_percentile_70: usize,
+    pub ttfb_percentile_80: usize,
+    pub ttfb_percentile_90: usize,
+    pub ttfb_percentile_95: usize,
+    pub ttfb_percentile_99: usize,
+    pub ttfb_percentile_100: usize,
 }
 
 /// Defines the metrics reported about transactions.
@@ -104,15 +116,19 @@ pub(crate) struct StatusCodeMetric {
 }
 
 /// Helper to generate a single response metric.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_response_metric(
     method: &str,
     name: &str,
     response_times: &BTreeMap<usize, usize>,
+    ttfb_times: &BTreeMap<usize, usize>,
     total_request_count: usize,
     response_time_minimum: usize,
     response_time_maximum: usize,
+    ttfb_minimum: usize,
+    ttfb_maximum: usize,
 ) -> ResponseMetric {
-    // Calculate percentiles in a loop.
+    // Calculate response time percentiles in a loop.
     let mut percentiles = Vec::new();
     for percent in &[0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0] {
         percentiles.push(metrics::calculate_response_time_percentile(
@@ -124,7 +140,19 @@ pub(crate) fn get_response_metric(
         ));
     }
 
-    // Now take the Strings out of the Vector and build a ResponseMetric object.
+    // Calculate TTFB percentiles in a loop.
+    let mut ttfb_percentiles = Vec::new();
+    for percent in &[0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 1.0] {
+        ttfb_percentiles.push(metrics::calculate_response_time_percentile(
+            ttfb_times,
+            total_request_count,
+            ttfb_minimum,
+            ttfb_maximum,
+            *percent,
+        ));
+    }
+
+    // Now build the ResponseMetric object with both response time and TTFB percentiles.
     ResponseMetric {
         method: method.to_string(),
         name: name.to_string(),
@@ -136,6 +164,14 @@ pub(crate) fn get_response_metric(
         percentile_95: percentiles[5],
         percentile_99: percentiles[6],
         percentile_100: percentiles[7],
+        ttfb_percentile_50: ttfb_percentiles[0],
+        ttfb_percentile_60: ttfb_percentiles[1],
+        ttfb_percentile_70: ttfb_percentiles[2],
+        ttfb_percentile_80: ttfb_percentiles[3],
+        ttfb_percentile_90: ttfb_percentiles[4],
+        ttfb_percentile_95: ttfb_percentiles[5],
+        ttfb_percentile_99: ttfb_percentiles[6],
+        ttfb_percentile_100: ttfb_percentiles[7],
     }
 }
 
@@ -147,6 +183,9 @@ pub(crate) fn raw_request_metrics_row(metric: RequestMetric) -> String {
         <td>{name}</td>
         <td>{number_of_requests}</td>
         <td>{number_of_failures}</td>
+        <td>{ttfb_average:.2}</td>
+        <td>{ttfb_minimum}</td>
+        <td>{ttfb_maximum}</td>
         <td>{response_time_average:.2}</td>
         <td>{response_time_minimum}</td>
         <td>{response_time_maximum}</td>
@@ -157,6 +196,9 @@ pub(crate) fn raw_request_metrics_row(metric: RequestMetric) -> String {
         name = metric.name,
         number_of_requests = metric.number_of_requests,
         number_of_failures = metric.number_of_failures,
+        ttfb_average = metric.ttfb_average,
+        ttfb_minimum = metric.ttfb_minimum,
+        ttfb_maximum = metric.ttfb_maximum,
         response_time_average = metric.response_time_average,
         response_time_minimum = metric.response_time_minimum,
         response_time_maximum = metric.response_time_maximum,
@@ -190,6 +232,34 @@ pub(crate) fn response_metrics_row(metric: ResponseMetric) -> String {
         percentile_95 = format_number(metric.percentile_95),
         percentile_99 = format_number(metric.percentile_99),
         percentile_100 = format_number(metric.percentile_100),
+    )
+}
+
+/// Build an individual row of TTFB metrics in the html report.
+pub(crate) fn ttfb_metrics_row(metric: ResponseMetric) -> String {
+    format!(
+        r#"<tr>
+            <td>{method}</td>
+            <td>{name}</td>
+            <td>{ttfb_percentile_50}</td>
+            <td>{ttfb_percentile_60}</td>
+            <td>{ttfb_percentile_70}</td>
+            <td>{ttfb_percentile_80}</td>
+            <td>{ttfb_percentile_90}</td>
+            <td>{ttfb_percentile_95}</td>
+            <td>{ttfb_percentile_99}</td>
+            <td>{ttfb_percentile_100}</td>
+        </tr>"#,
+        method = metric.method,
+        name = metric.name,
+        ttfb_percentile_50 = format_number(metric.ttfb_percentile_50),
+        ttfb_percentile_60 = format_number(metric.ttfb_percentile_60),
+        ttfb_percentile_70 = format_number(metric.ttfb_percentile_70),
+        ttfb_percentile_80 = format_number(metric.ttfb_percentile_80),
+        ttfb_percentile_90 = format_number(metric.ttfb_percentile_90),
+        ttfb_percentile_95 = format_number(metric.ttfb_percentile_95),
+        ttfb_percentile_99 = format_number(metric.ttfb_percentile_99),
+        ttfb_percentile_100 = format_number(metric.ttfb_percentile_100),
     )
 }
 
@@ -662,6 +732,9 @@ pub(crate) fn build_report(
                         <th>Name</th>
                         <th># Requests</th>
                         <th># Fails</th>
+                        <th>TTFB Avg (ms)</th>
+                        <th>TTFB Min (ms)</th>
+                        <th>TTFB Max (ms)</th>
                         <th>Average (ms)</th>
                         <th>Min (ms)</th>
                         <th>Max (ms)</th>
@@ -677,11 +750,34 @@ pub(crate) fn build_report(
 
         {co_requests_template}
 
+
         <div class="responses">
             <h2>Response Time Metrics</h2>
 
             {graph_average_response_time_template}
 
+            <h3>Time to First Byte (TTFB) Metrics</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Method</th>
+                        <th>Name</th>
+                        <th>50%ile (ms)</th>
+                        <th>60%ile (ms)</th>
+                        <th>70%ile (ms)</th>
+                        <th>80%ile (ms)</th>
+                        <th>90%ile (ms)</th>
+                        <th>95%ile (ms)</th>
+                        <th>99%ile (ms)</th>
+                        <th>100%ile (ms)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {raw_ttfb_template}
+                </tbody>
+            </table>
+
+            <h3>Response Time Metrics</h3>
             <table>
                 <thead>
                     <tr>
@@ -729,6 +825,7 @@ pub(crate) fn build_report(
         pkg_name = pkg_name,
         pkg_version = pkg_version,
         raw_requests_template = templates.raw_requests_template,
+        raw_ttfb_template = templates.raw_ttfb_template,
         raw_responses_template = templates.raw_responses_template,
         co_requests_template = templates.co_requests_template,
         co_responses_template = templates.co_responses_template,

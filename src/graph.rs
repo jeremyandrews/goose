@@ -69,6 +69,8 @@ pub(crate) struct GraphData {
     errors_per_second: ItemsPerSecond,
     /// Maintains average response time per second.
     average_response_time_per_second: HashMap<String, TimeSeries<MovingAverage, f32>>,
+    /// Maintains average TTFB time per second.
+    average_ttfb_time_per_second: HashMap<String, TimeSeries<MovingAverage, f32>>,
     /// Number of transactions at the end of each second of the test.
     transactions_per_second: TimeSeries<usize, usize>,
     /// Number of scenarios at the end of each second of the test.
@@ -85,6 +87,7 @@ impl GraphData {
             requests_per_second: ItemsPerSecond::new(),
             errors_per_second: ItemsPerSecond::new(),
             average_response_time_per_second: HashMap::new(),
+            average_ttfb_time_per_second: HashMap::new(),
             transactions_per_second: TimeSeries::new(),
             scenarios_per_second: TimeSeries::new(),
             users_per_second: TimeSeries::new(),
@@ -124,6 +127,27 @@ impl GraphData {
 
         debug!(
             "updated second {} for average response time per second: {}",
+            second,
+            data.get(second).average
+        );
+    }
+
+    /// Record average TTFB time per second metric.
+    pub(crate) fn record_average_ttfb_time_per_second(
+        &mut self,
+        key: String,
+        second: usize,
+        ttfb_time: u64,
+    ) {
+        if !self.average_ttfb_time_per_second.contains_key(&key) {
+            self.average_ttfb_time_per_second
+                .insert(key.clone(), TimeSeries::new());
+        }
+        let data = self.average_ttfb_time_per_second.get_mut(&key).unwrap();
+        data.increase_value(second, ttfb_time as f32);
+
+        debug!(
+            "updated second {} for average TTFB time per second: {}",
             second,
             data.get(second).average
         );
@@ -187,6 +211,260 @@ impl GraphData {
             granular_data,
             self.average_response_time_per_second.clone(),
         )
+    }
+
+    /// Generate average TTFB graph.
+    pub(crate) fn get_average_ttfb_graph(
+        &self,
+        granular_data: bool,
+    ) -> Graph<MovingAverage, f32> {
+        self.create_graph_from_data(
+            "graph-avg-ttfb",
+            "TTFB [ms]",
+            granular_data,
+            self.average_ttfb_time_per_second.clone(),
+        )
+    }
+
+    /// Generate combined response time and TTFB graph.
+    pub(crate) fn get_combined_response_ttfb_graph(
+        &self,
+        granular_data: bool,
+        history: &[TestPlanHistory],
+        test_started_time: DateTime<Utc>,
+    ) -> String {
+        // Create a combined graph that shows both response time and TTFB data
+        self.create_combined_response_ttfb_markup(granular_data, history, test_started_time)
+    }
+
+    /// Creates a combined graph with response time (solid lines) and TTFB (dashed lines).
+    fn create_combined_response_ttfb_markup(
+        &self,
+        granular_data: bool,
+        history: &[TestPlanHistory],
+        test_started_time: DateTime<Utc>,
+    ) -> String {
+        // If no data, return empty graph
+        if self.average_response_time_per_second.is_empty() && self.average_ttfb_time_per_second.is_empty() {
+            return "<!-- no response time or TTFB data -->".to_string();
+        }
+
+        // Generate the combined graph markup with both response time and TTFB series
+        let mut steps = String::new();
+        for step in history.windows(2) {
+            let started = Local
+                .timestamp_opt(step[0].timestamp.timestamp(), 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            let stopped = Local
+                .timestamp_opt(step[1].timestamp.timestamp(), 0)
+                .unwrap()
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            match &step[0].action {
+                TestPlanStepAction::Increasing => {
+                    let _ = write!(
+                        steps,
+                        r#"[
+                            {{
+                                xAxis: '{started}',
+                                itemStyle: {{ borderColor: 'rgba(44, 102, 79, 0.25)', borderWidth: 1 }},
+                            }},
+                            {{
+                                xAxis: '{started}'
+                            }}
+                        ],
+                        [
+                            {{
+                                xAxis: '{started}',
+                                itemStyle: {{ color: 'rgba(44, 102, 79, 0.05)' }},
+                            }},
+                            {{
+                                xAxis: '{stopped}'
+                            }}
+                        ],
+                        [
+                            {{
+                                xAxis: '{stopped}',
+                                itemStyle: {{ borderColor: 'rgba(44, 102, 79, 0.25)', borderWidth: 1 }},
+                            }},
+                            {{
+                                xAxis: '{stopped}'
+                            }}
+                        ],"#,
+                    );
+                }
+                TestPlanStepAction::Decreasing | TestPlanStepAction::Canceling => {
+                    let _ = write!(
+                        steps,
+                        r#"[
+                            {{
+                                xAxis: '{started}',
+                                itemStyle: {{ borderColor: 'rgba(179, 65, 65, 0.25)', borderWidth: 1 }},
+                            }},
+                            {{
+                                xAxis: '{started}'
+                            }}
+                        ],
+                        [
+                            {{
+                                xAxis: '{started}',
+                                itemStyle: {{ color: 'rgba(179, 65, 65, 0.05)' }},
+                            }},
+                            {{
+                                xAxis: '{stopped}'
+                            }}
+                        ],
+                        [
+                            {{
+                                xAxis: '{stopped}',
+                                itemStyle: {{ borderColor: 'rgba(179, 65, 65, 0.25)', borderWidth: 1 }},
+                            }},
+                            {{
+                                xAxis: '{stopped}'
+                            }}
+                        ],"#,
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // Build series for response time and TTFB data
+        let mut series = String::new();
+        let mut legend_items = Vec::new();
+
+        // Add response time series (solid lines)
+        for (key, data) in &self.average_response_time_per_second {
+            legend_items.push(format!("RT: {}", key));
+            let formatted_data = self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
+            let _ = write!(
+                series,
+                r#"{{
+                    name: 'RT: {key}',
+                    type: 'line',
+                    symbol: 'none',
+                    sampling: 'lttb',
+                    data: {values},
+                }},"#,
+                key = key,
+                values = serde_json::to_string(&formatted_data).unwrap_or_default()
+            );
+        }
+
+        // Add TTFB series (dashed lines)
+        for (key, data) in &self.average_ttfb_time_per_second {
+            legend_items.push(format!("TTFB: {}", key));
+            let formatted_data = self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
+            let _ = write!(
+                series,
+                r#"{{
+                    name: 'TTFB: {key}',
+                    type: 'line',
+                    symbol: 'none',
+                    sampling: 'lttb',
+                    lineStyle: {{ type: 'dashed' }},
+                    data: {values},
+                }},"#,
+                key = key,
+                values = serde_json::to_string(&formatted_data).unwrap_or_default()
+            );
+        }
+
+        let legend = if legend_items.len() > 1 {
+            format!(
+                r#"legend: {{
+                    type: '{legend_type}',
+                    width: '75%',
+                    data: {data},
+                }},"#,
+                legend_type = if legend_items.len() > 4 { "scroll" } else { "plain" },
+                data = serde_json::to_string(&legend_items).unwrap_or_default()
+            )
+        } else {
+            String::new()
+        };
+
+        format!(
+            r#"<div class="graph">
+                <div id="graph-combined-response-ttfb" style="width: 1000px; height:500px; background: white;"></div>
+
+                <script type="text/javascript">
+                    var chartDom = document.getElementById('graph-combined-response-ttfb');
+                    var myChart = echarts.init(chartDom);
+
+                    myChart.setOption({{
+                        color: ['#2c664f', '#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc'],
+                        tooltip: {{ trigger: 'axis' }},
+                        toolbox: {{
+                            feature: {{
+                                dataZoom: {{ yAxisIndex: 'none' }},
+                                restore: {{}},
+                                saveAsImage: {{}}
+                            }}
+                        }},
+                        dataZoom: [
+                            {{
+                                type: 'inside',
+                                start: 0,
+                                end: 100,
+                                fillerColor: 'rgba(34, 80, 61, 0.25)',
+                                selectedDataBackground: {{
+                                    lineStyle: {{ color: '#2c664f' }},
+                                    areaStyle: {{ color: '#378063' }}
+                                }}
+                            }},
+                            {{
+                                start: 0,
+                                end: 100,
+                                fillerColor: 'rgba(34, 80, 61, 0.25)',
+                                selectedDataBackground: {{
+                                    lineStyle: {{ color: '#2c664f' }},
+                                    areaStyle: {{ color: '#378063' }}
+                                }}
+                            }},
+                        ],
+                        xAxis: {{ type: 'time' }},
+                        yAxis: {{
+                            name: 'Time [ms]',
+                            nameLocation: 'center',
+                            nameRotate: 90,
+                            nameGap: 45,
+                            type: 'value'
+                        }},
+                        {legend}
+                        series: [
+                            {series}
+                        ]
+                    }});
+                </script>
+            </div>"#,
+            legend = legend,
+            series = series,
+        )
+    }
+
+    /// Helper method to add timestamps to graph data for the combined graph
+    fn add_timestamp_to_html_graph_data(
+        &self,
+        data: &[Option<f32>],
+        started: DateTime<Utc>,
+    ) -> Vec<(String, f32)> {
+        data.iter()
+            .enumerate()
+            .map(|(second, value)| {
+                (
+                    Local
+                        .timestamp_opt(second as i64 + started.timestamp(), 0)
+                        .unwrap()
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                    *value,
+                )
+            })
+            .filter_map(|(time, data_option)| data_option.map(|data| (time, data)))
+            .collect::<Vec<_>>()
     }
 
     /// Generate active transactions graph.
@@ -889,6 +1167,38 @@ mod test {
                     MovingAverage {
                         count: 567,
                         average: 5.67,
+                    },
+                ],
+                phantom: PhantomData,
+                total: MovingAverage {
+                    count: 0,
+                    average: 0.,
+                },
+            },
+        );
+        graph.average_ttfb_time_per_second.insert(
+            "GET /".to_string(),
+            TimeSeries {
+                data: vec![
+                    MovingAverage {
+                        count: 50,
+                        average: 0.5,
+                    },
+                    MovingAverage {
+                        count: 60,
+                        average: 0.6,
+                    },
+                    MovingAverage {
+                        count: 70,
+                        average: 0.7,
+                    },
+                    MovingAverage {
+                        count: 80,
+                        average: 0.8,
+                    },
+                    MovingAverage {
+                        count: 90,
+                        average: 0.9,
                     },
                 ],
                 phantom: PhantomData,
