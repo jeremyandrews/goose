@@ -214,10 +214,7 @@ impl GraphData {
     }
 
     /// Generate average TTFB graph.
-    pub(crate) fn get_average_ttfb_graph(
-        &self,
-        granular_data: bool,
-    ) -> Graph<MovingAverage, f32> {
+    pub(crate) fn get_average_ttfb_graph(&self, granular_data: bool) -> Graph<MovingAverage, f32> {
         self.create_graph_from_data(
             "graph-avg-ttfb",
             "TTFB [ms]",
@@ -245,7 +242,9 @@ impl GraphData {
         test_started_time: DateTime<Utc>,
     ) -> String {
         // If no data, return empty graph
-        if self.average_response_time_per_second.is_empty() && self.average_ttfb_time_per_second.is_empty() {
+        if self.average_response_time_per_second.is_empty()
+            && self.average_ttfb_time_per_second.is_empty()
+        {
             return "<!-- no response time or TTFB data -->".to_string();
         }
 
@@ -338,7 +337,8 @@ impl GraphData {
         // Add response time series (solid lines)
         for (key, data) in &self.average_response_time_per_second {
             legend_items.push(format!("RT: {}", key));
-            let formatted_data = self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
+            let formatted_data =
+                self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
             let _ = write!(
                 series,
                 r#"{{
@@ -356,7 +356,8 @@ impl GraphData {
         // Add TTFB series (dashed lines)
         for (key, data) in &self.average_ttfb_time_per_second {
             legend_items.push(format!("TTFB: {}", key));
-            let formatted_data = self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
+            let formatted_data =
+                self.add_timestamp_to_html_graph_data(&data.get_graph_data(), test_started_time);
             let _ = write!(
                 series,
                 r#"{{
@@ -379,7 +380,11 @@ impl GraphData {
                     width: '75%',
                     data: {data},
                 }},"#,
-                legend_type = if legend_items.len() > 4 { "scroll" } else { "plain" },
+                legend_type = if legend_items.len() > 4 {
+                    "scroll"
+                } else {
+                    "plain"
+                },
                 data = serde_json::to_string(&legend_items).unwrap_or_default()
             )
         } else {

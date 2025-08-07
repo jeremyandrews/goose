@@ -287,9 +287,14 @@
 //! See the License for the specific language governing permissions and
 //! limitations under the License.
 
+use async_trait::async_trait;
 use downcast_rs::{impl_downcast, Downcast};
 use regex::Regex;
-use reqwest::{header, Client, ClientBuilder, Method, RequestBuilder, Response};
+use reqwest::{header, Client, ClientBuilder, Method, Response};
+use reqwest_middleware::{
+    ClientBuilder as MiddlewareClientBuilder, ClientWithMiddleware, Middleware, Next,
+    RequestBuilder, Result as MiddlewareResult,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -311,6 +316,29 @@ static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_P
 
 /// By default Goose times out requests after 60,000 milliseconds.
 static GOOSE_REQUEST_TIMEOUT: u64 = 60_000;
+
+/// Extension type to store TTFB timing in response extensions
+#[derive(Debug, Copy, Clone)]
+pub struct Ttfb(pub std::time::Duration);
+
+/// Middleware that captures Time to First Byte (TTFB) timing
+pub struct TtfbMiddleware;
+
+#[async_trait]
+impl Middleware for TtfbMiddleware {
+    async fn handle(
+        &self,
+        req: reqwest::Request,
+        extensions: &mut http::Extensions,
+        next: Next<'_>,
+    ) -> MiddlewareResult<reqwest::Response> {
+        let start = Instant::now();
+        let mut response = next.run(req, extensions).await?;
+        // Store TTFB in response extensions - this is exactly when headers arrive
+        response.extensions_mut().insert(Ttfb(start.elapsed()));
+        Ok(response)
+    }
+}
 
 /// `transaction!(foo)` expands to `Transaction::new(foo)`, but also does some boxing to work around a limitation in the compiler.
 #[macro_export]
@@ -860,7 +888,7 @@ pub struct GooseUser {
     /// Current transaction name, if set.
     pub(crate) transaction_name: Option<String>,
     /// Client used to make requests, managing sessions and cookies.
-    pub client: Client,
+    pub client: ClientWithMiddleware,
     /// The base URL to prepend to all relative paths.
     pub base_url: Url,
     /// A local copy of the global [`GooseConfiguration`](../struct.GooseConfiguration.html).
@@ -941,7 +969,10 @@ impl GooseUser {
         trace!("new GooseUser");
 
         let client = match reqwest_client {
-            Some(c) => c,
+            Some(c) => {
+                // Wrap the provided client with middleware for TTFB tracking
+                MiddlewareClientBuilder::new(c).with(TtfbMiddleware).build()
+            }
             None => create_reqwest_client(configuration)?,
         };
 
@@ -1317,13 +1348,13 @@ impl GooseUser {
     ) -> Result<GooseResponse, Box<TransactionError>> {
         // Build a Reqwest RequestBuilder object.
         let url = self.build_url(path)?;
-        let reqwest_request_builder = self.client.post(url);
+        let reqwest_request_builder = self.client.post(url).form(&form);
 
         // POST form request.
         let goose_request = GooseRequest::builder()
             .method(GooseMethod::Post)
             .path(path)
-            .set_request_builder(reqwest_request_builder.form(&form))
+            .set_request_builder(reqwest_request_builder)
             .build();
 
         // Make the request and return the GooseResponse.
@@ -1366,13 +1397,36 @@ impl GooseUser {
     ) -> Result<GooseResponse, Box<TransactionError>> {
         // Build a Reqwest RequestBuilder object.
         let url = self.build_url(path)?;
-        let reqwest_request_builder = self.client.post(url);
+
+        // Create the request with JSON body using the underlying reqwest client
+        let json_body = serde_json::to_string(json).map_err(|_e| {
+            Box::new(TransactionError::RequestFailed {
+                raw_request: GooseRequestMetric::new(
+                    GooseRawRequest::new(GooseMethod::Post, path, vec![], ""),
+                    TransactionDetail {
+                        scenario_index: 0,
+                        scenario_name: "",
+                        transaction_index: "",
+                        transaction_name: "",
+                    },
+                    path,
+                    0,
+                    0,
+                ),
+            })
+        })?;
+
+        let reqwest_request_builder = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .body(json_body);
 
         // POST json request.
         let goose_request = GooseRequest::builder()
             .method(GooseMethod::Post)
             .path(path)
-            .set_request_builder(reqwest_request_builder.json(&json))
+            .set_request_builder(reqwest_request_builder)
             .build();
 
         // Make the request and return the GooseResponse.
@@ -1645,7 +1699,7 @@ impl GooseUser {
 
         // Make the actual request
         let response = self.client.execute(built_request).await;
-        
+
         // Record TTFB (Time to First Byte) - this is when we first receive response headers
         // With reqwest, the response object is available as soon as headers are received
         let ttfb_time = started.elapsed().as_millis() as u64;
@@ -1703,7 +1757,13 @@ impl GooseUser {
                 warn!("{:?}: {}", &path, e);
                 request_metric.success = false;
                 request_metric.set_status_code(None);
-                request_metric.error = clean_reqwest_error(e, request_name);
+                // Handle reqwest_middleware::Error by extracting the underlying reqwest::Error if possible
+                request_metric.error = match e {
+                    reqwest_middleware::Error::Reqwest(reqwest_err) => {
+                        clean_reqwest_error(&reqwest_err, request_name)
+                    }
+                    _ => format!("middleware error: {}", request_name),
+                };
             }
         };
 
@@ -1728,7 +1788,27 @@ impl GooseUser {
             }));
         }
 
-        Ok(GooseResponse::new(request_metric, response))
+        // Convert reqwest_middleware::Error to reqwest::Error for GooseResponse
+        let converted_response = match response {
+            Ok(resp) => Ok(resp),
+            Err(reqwest_middleware::Error::Reqwest(reqwest_err)) => Err(reqwest_err),
+            Err(_other_err) => {
+                // For non-reqwest middleware errors, we'll create a simple error by making a request to an invalid URL
+                // This is a workaround since we can't easily create arbitrary reqwest errors
+                let client = reqwest::Client::new();
+                let invalid_url = "http://invalid-middleware-error-url-that-does-not-exist.local";
+                match client.get(invalid_url).send().await {
+                    Err(e) => Err(e),
+                    Ok(_) => {
+                        // This should never happen - we're making a request to an invalid URL
+                        // that should always fail. If it somehow succeeds, we'll panic.
+                        panic!("Unexpected success when making request to invalid URL for error conversion")
+                    }
+                }
+            }
+        };
+
+        Ok(GooseResponse::new(request_metric, converted_response))
     }
 
     /// Tracks the time it takes for the current GooseUser to loop through all Transactions
@@ -2288,7 +2368,11 @@ impl GooseUser {
         &mut self,
         builder: ClientBuilder,
     ) -> Result<(), TransactionError> {
-        self.client = builder.build()?;
+        let client = builder.build()?;
+        // Wrap the client with middleware for TTFB tracking
+        self.client = MiddlewareClientBuilder::new(client)
+            .with(TtfbMiddleware)
+            .build();
 
         Ok(())
     }
@@ -2371,7 +2455,7 @@ impl GooseUser {
 /// Internal helper function to create the default GooseUser reqwest client
 pub(crate) fn create_reqwest_client(
     configuration: &GooseConfiguration,
-) -> Result<Client, reqwest::Error> {
+) -> Result<ClientWithMiddleware, reqwest::Error> {
     // Either use manually configured timeout, or default.
     let timeout = if configuration.timeout.is_some() {
         match crate::util::get_float_from_string(configuration.timeout.clone()) {
@@ -2382,7 +2466,7 @@ pub(crate) fn create_reqwest_client(
         GOOSE_REQUEST_TIMEOUT
     };
 
-    Client::builder()
+    let client = Client::builder()
         .user_agent(APP_USER_AGENT)
         .cookie_store(true)
         .timeout(Duration::from_millis(timeout))
@@ -2390,7 +2474,12 @@ pub(crate) fn create_reqwest_client(
         .gzip(!configuration.no_gzip)
         // Validate https certificates unless `--accept-invalid-certs` is enabled.
         .danger_accept_invalid_certs(configuration.accept_invalid_certs)
-        .build()
+        .build()?;
+
+    // Wrap the client with middleware for TTFB tracking
+    Ok(MiddlewareClientBuilder::new(client)
+        .with(TtfbMiddleware)
+        .build())
 }
 
 /// Defines the HTTP requests that Goose makes.

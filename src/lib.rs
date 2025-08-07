@@ -779,7 +779,7 @@ impl GooseAttack {
                     base_url,
                     &self.configuration,
                     self.metrics.hash,
-                    Some(goose::create_reqwest_client(&self.configuration)?),
+                    None,
                 )?);
                 user_count += 1;
                 if user_count == total_users {
