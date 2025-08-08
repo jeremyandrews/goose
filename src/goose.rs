@@ -1703,11 +1703,14 @@ impl GooseUser {
         // Record TTFB (Time to First Byte) - extract from middleware extensions
         // The TtfbMiddleware captures the actual TTFB when headers arrive
         let ttfb_time = if let Ok(ref response) = response {
-            response
-                .extensions()
-                .get::<Ttfb>()
-                .map(|ttfb| ttfb.0.as_millis() as u64)
-                .unwrap_or_else(|| started.elapsed().as_millis() as u64)
+            // Use the TTFB from middleware if available, otherwise fallback to measuring from request start
+            if let Some(ttfb) = response.extensions().get::<Ttfb>() {
+                ttfb.0.as_millis() as u64
+            } else {
+                // If middleware extension is not found, we need to measure TTFB manually
+                // This should not happen with properly working middleware, but provides fallback
+                started.elapsed().as_millis() as u64
+            }
         } else {
             // Fallback for error cases - use elapsed time
             started.elapsed().as_millis() as u64

@@ -216,6 +216,60 @@ fn validate_ttfb_patterns(metrics: &GooseMetrics) -> Result<(), String> {
     Ok(())
 }
 
+/// STRICT validation function that detects the TTFB bug
+/// This function will FAIL when TTFB equals response time in scenarios where they should differ
+fn validate_ttfb_bug_detection(metrics: &GooseMetrics, scenario_name: &str) -> Result<(), String> {
+    println!("\nValidating TTFB implementation for {}", scenario_name);
+
+    // Extract metrics for all request types
+    for (request_key, request_metric) in &metrics.requests {
+        let ttfb_average = if request_metric.raw_data.counter > 0 {
+            request_metric.raw_data.ttfb_total_time as f64 / request_metric.raw_data.counter as f64
+        } else {
+            0.0
+        };
+
+        let response_time_average = if request_metric.raw_data.counter > 0 {
+            request_metric.raw_data.total_time as f64 / request_metric.raw_data.counter as f64
+        } else {
+            0.0
+        };
+
+        println!("Analyzing {}", request_key);
+        println!("  TTFB Average: {:.3}ms", ttfb_average);
+        println!("  Response Time Average: {:.3}ms", response_time_average);
+        println!("  Requests: {}", request_metric.raw_data.counter);
+
+        let difference = (ttfb_average - response_time_average).abs();
+        println!("  Difference: {:.6}ms", difference);
+
+        // If TTFB exactly equals response time (within 0.001ms), this indicates the bug
+        if difference < 0.001 && ttfb_average > 0.0 {
+            return Err(format!(
+                "TTFB ({:.6}ms) exactly equals Response Time ({:.6}ms) for {}. \
+                 This indicates the TtfbMiddleware extension retrieval is failing and falling back to started.elapsed().",
+                ttfb_average, response_time_average, request_key
+            ));
+        }
+
+        // For slow processing endpoints, TTFB should be significantly different from response time
+        if request_key.contains("slow") || request_key.contains("delay") {
+            if difference < 1.0 && ttfb_average > 100.0 {
+                return Err(format!(
+                    "For slow endpoint {}, TTFB ({:.3}ms) should differ significantly from Response Time ({:.3}ms). \
+                     Difference of {:.3}ms is too small, indicating TTFB is not being measured correctly.",
+                    request_key, ttfb_average, response_time_average, difference
+                ));
+            }
+        }
+
+        println!("  TTFB timing looks correct");
+    }
+
+    println!("No TTFB bug detected in {} scenario", scenario_name);
+    Ok(())
+}
+
 /// Transaction function for testing fast endpoint
 async fn test_fast_endpoint(user: &mut GooseUser) -> TransactionResult {
     let _goose = user.get("/fast").await?;
@@ -240,6 +294,12 @@ async fn test_variable_delays(user: &mut GooseUser) -> TransactionResult {
     let endpoints = ["/delay-100", "/delay-500", "/delay-1000"];
     let endpoint = endpoints[user.weighted_users_index % endpoints.len()];
     let _goose = user.get(endpoint).await?;
+    Ok(())
+}
+
+/// Transaction function for testing equality detection endpoint
+async fn test_equality_endpoint(user: &mut GooseUser) -> TransactionResult {
+    let _goose = user.get("/test-equality").await?;
     Ok(())
 }
 
@@ -332,6 +392,13 @@ async fn test_ttfb_fast_endpoint() {
         "Fast endpoint: TTFB ({:.1}ms) and Response Time ({:.1}ms) should be similar, diff: {:.1}ms", 
         fast_metrics.ttfb_average, fast_metrics.response_time_average, diff);
 
+    // CRITICAL: Even for fast endpoints, TTFB should NOT exactly equal response time (middleware bug detection)
+    assert!(
+        diff >= 0.001 || fast_metrics.ttfb_average < 1.0,
+        "TTFB ({:.6}ms) exactly equals Response Time ({:.6}ms) for fast endpoint. This indicates middleware extension retrieval bug.",
+        fast_metrics.ttfb_average, fast_metrics.response_time_average
+    );
+
     println!("✅ Fast endpoint test passed: TTFB ≈ Response Time ({diff:.1}ms diff)");
 }
 
@@ -377,6 +444,14 @@ async fn test_ttfb_slow_processing() {
         slow_metrics.ttfb_average >= 900.0 && slow_metrics.ttfb_average <= 1100.0,
         "Slow processing: TTFB should be ~1000ms, got {:.1}ms",
         slow_metrics.ttfb_average
+    );
+
+    // CRITICAL: TTFB should NOT equal response time - this detects the middleware bug
+    let difference = (slow_metrics.ttfb_average - slow_metrics.response_time_average).abs();
+    assert!(
+        difference >= 0.001,
+        "TTFB ({:.6}ms) should not equal Response Time ({:.6}ms) for slow processing. Difference: {:.6}ms indicates middleware extension retrieval bug.",
+        slow_metrics.ttfb_average, slow_metrics.response_time_average, difference
     );
 
     println!(
@@ -434,6 +509,14 @@ async fn test_ttfb_large_response() {
         large_metrics.response_time_average
     );
 
+    // CRITICAL: TTFB should NOT exactly equal response time - this detects the middleware bug
+    let difference = (large_metrics.ttfb_average - large_metrics.response_time_average).abs();
+    assert!(
+        difference >= 0.001 || large_metrics.ttfb_average < 1.0,
+        "TTFB ({:.6}ms) exactly equals Response Time ({:.6}ms) for large response. This indicates middleware extension retrieval bug.",
+        large_metrics.ttfb_average, large_metrics.response_time_average
+    );
+
     let transfer_time = large_metrics.response_time_average - large_metrics.ttfb_average;
     println!("✅ Large response test passed: TTFB data captured correctly");
     println!(
@@ -458,5 +541,191 @@ async fn test_ttfb_comprehensive_validation() {
         Err(error) => {
             panic!("TTFB validation failed: {}", error);
         }
+    }
+}
+
+/// STRICT BUG DETECTION TEST: This test should FAIL with current broken implementation
+/// This test will detect when TTFB equals response time, indicating the middleware bug
+#[tokio::test]
+#[serial]
+async fn test_ttfb_bug_detection_slow_processing() {
+    println!("Testing TTFB implementation with slow processing scenario");
+
+    let server = MockServer::start();
+
+    let slow_endpoint = server.mock(|when, then| {
+        when.method(GET).path("/slow-processing");
+        then.status(200)
+            .delay(Duration::from_millis(1000)) // 1 second delay
+            .body("Processed after delay");
+    });
+
+    let configuration = common::build_configuration(
+        &server,
+        vec![
+            "--users",
+            "5",
+            "--hatch-rate",
+            "5",
+            "--run-time",
+            "6", // Longer to ensure we get consistent measurements
+            "--quiet",
+        ],
+    );
+
+    let scenarios = vec![scenario!("BugDetectionSlowProcessing")
+        .register_transaction(transaction!(test_slow_processing))];
+
+    let goose_attack = common::build_load_test(configuration, scenarios, None, None);
+    let goose_metrics = common::run_load_test(goose_attack, None).await;
+
+    assert!(slow_endpoint.hits() > 0);
+
+    // This should FAIL if TTFB equals response time
+    match validate_ttfb_bug_detection(&goose_metrics, "Slow Processing") {
+        Ok(()) => {
+            println!("TTFB validation passed - implementation is working correctly");
+        }
+        Err(error) => {
+            panic!("TTFB validation failed: {}", error);
+        }
+    }
+}
+
+/// STRICT BUG DETECTION TEST: Variable delays should show different TTFB patterns
+/// This test will fail if TTFB always equals response time regardless of delay
+#[tokio::test]
+#[serial]
+async fn test_ttfb_bug_detection_variable_delays() {
+    println!("Testing TTFB implementation with variable delays scenario");
+
+    let server = MockServer::start();
+    let mock_endpoints = setup_ttfb_test_endpoints(&server);
+
+    let configuration = common::build_configuration(
+        &server,
+        vec![
+            "--users",
+            "8",
+            "--hatch-rate",
+            "8",
+            "--run-time",
+            "10", // Longer run to get data from all delay endpoints
+            "--quiet",
+        ],
+    );
+
+    let scenarios = vec![scenario!("BugDetectionVariableDelays")
+        .register_transaction(transaction!(test_variable_delays))];
+
+    let goose_attack = common::build_load_test(configuration, scenarios, None, None);
+    let goose_metrics = common::run_load_test(goose_attack, None).await;
+
+    // Verify endpoints were hit
+    for endpoint in &mock_endpoints {
+        if endpoint.hits() == 0 {
+            println!("⚠️  Warning: Mock endpoint was not called during test");
+        }
+    }
+
+    // This should FAIL if TTFB equals response time
+    match validate_ttfb_bug_detection(&goose_metrics, "Variable Delays") {
+        Ok(()) => {
+            println!("TTFB validation passed - implementation is working correctly");
+        }
+        Err(error) => {
+            panic!("TTFB validation failed: {}", error);
+        }
+    }
+}
+
+/// Direct equality check for TTFB vs Response Time
+/// This test directly checks if TTFB equals response time  
+#[tokio::test]
+#[serial]
+async fn test_ttfb_equals_response_time_bug_detection() {
+    println!("Testing TTFB vs Response Time equality");
+
+    let server = MockServer::start();
+
+    // Use a slow endpoint that should show clear difference between TTFB and response time
+    let slow_endpoint = server.mock(|when, then| {
+        when.method(GET).path("/test-equality");
+        then.status(200)
+            .delay(Duration::from_millis(800)) // 800ms delay
+            .body("Test response for equality detection");
+    });
+
+    let configuration = common::build_configuration(
+        &server,
+        vec![
+            "--users",
+            "3",
+            "--hatch-rate",
+            "3",
+            "--run-time",
+            "4",
+            "--quiet",
+        ],
+    );
+
+    let scenarios =
+        vec![scenario!("DirectEqualityTest")
+            .register_transaction(transaction!(test_equality_endpoint))];
+
+    let goose_attack = common::build_load_test(configuration, scenarios, None, None);
+    let goose_metrics = common::run_load_test(goose_attack, None).await;
+
+    assert!(
+        slow_endpoint.hits() > 0,
+        "Test endpoint should have been called"
+    );
+
+    // Direct check for the bug
+    let request_key = "GET /test-equality";
+    if let Some(request_metric) = goose_metrics.requests.get(request_key) {
+        let ttfb_average = if request_metric.raw_data.counter > 0 {
+            request_metric.raw_data.ttfb_total_time as f64 / request_metric.raw_data.counter as f64
+        } else {
+            0.0
+        };
+
+        let response_time_average = if request_metric.raw_data.counter > 0 {
+            request_metric.raw_data.total_time as f64 / request_metric.raw_data.counter as f64
+        } else {
+            0.0
+        };
+
+        println!("Results:");
+        println!("  TTFB Average: {:.6}ms", ttfb_average);
+        println!("  Response Time Average: {:.6}ms", response_time_average);
+        println!("  Requests: {}", request_metric.raw_data.counter);
+
+        let difference = (ttfb_average - response_time_average).abs();
+        println!("  Difference: {:.6}ms", difference);
+
+        // For a 800ms delay, TTFB and response time should be different
+        // If they are exactly the same (within 0.001ms), this indicates the bug
+        if difference < 0.001 && ttfb_average > 0.0 {
+            panic!(
+                "TTFB ({:.6}ms) exactly equals Response Time ({:.6}ms). \
+                 This confirms that the TtfbMiddleware extension retrieval is failing. \
+                 The middleware is falling back to started.elapsed() which gives total response time.",
+                ttfb_average, response_time_average
+            );
+        }
+
+        // For delayed requests, we should see at least some difference
+        if ttfb_average > 500.0 && difference < 5.0 {
+            panic!(
+                "For delayed endpoint, TTFB ({:.3}ms) should differ from Response Time ({:.3}ms). \
+                 Difference of {:.3}ms is suspiciously small for an 800ms delay.",
+                ttfb_average, response_time_average, difference
+            );
+        }
+
+        println!("TTFB implementation appears correct - values show expected difference");
+    } else {
+        panic!("Missing request metrics for {}", request_key);
     }
 }
