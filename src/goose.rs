@@ -1700,9 +1700,18 @@ impl GooseUser {
         // Make the actual request
         let response = self.client.execute(built_request).await;
 
-        // Record TTFB (Time to First Byte) - this is when we first receive response headers
-        // With reqwest, the response object is available as soon as headers are received
-        let ttfb_time = started.elapsed().as_millis() as u64;
+        // Record TTFB (Time to First Byte) - extract from middleware extensions
+        // The TtfbMiddleware captures the actual TTFB when headers arrive
+        let ttfb_time = if let Ok(ref response) = response {
+            response
+                .extensions()
+                .get::<Ttfb>()
+                .map(|ttfb| ttfb.0.as_millis() as u64)
+                .unwrap_or_else(|| started.elapsed().as_millis() as u64)
+        } else {
+            // Fallback for error cases - use elapsed time
+            started.elapsed().as_millis() as u64
+        };
         request_metric.time_to_first_byte = ttfb_time;
 
         // Set response time to TTFB initially - this will be updated when the response body is consumed
