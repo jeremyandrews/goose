@@ -1703,22 +1703,33 @@ impl GooseUser {
         // Record TTFB (Time to First Byte) - extract from middleware extensions
         // The TtfbMiddleware captures the actual TTFB when headers arrive
         let ttfb_time = if let Ok(ref response) = response {
-            // Use the TTFB from middleware if available, otherwise fallback to measuring from request start
+            // Extract TTFB from middleware - this MUST be available if middleware is working
             if let Some(ttfb) = response.extensions().get::<Ttfb>() {
                 ttfb.0.as_millis() as u64
             } else {
-                // If middleware extension is not found, we need to measure TTFB manually
-                // This should not happen with properly working middleware, but provides fallback
-                started.elapsed().as_millis() as u64
+                // CRITICAL: Middleware extension retrieval failed!
+                // This should never happen with properly configured TtfbMiddleware.
+                // Instead of silently falling back to started.elapsed() (which would make
+                // TTFB equal to response time and hide the bug), we explicitly panic
+                // to make the middleware failure obvious during development/testing.
+                panic!(
+                    "TTFB middleware extension not found in response! \
+                     This indicates the TtfbMiddleware failed to store TTFB data. \
+                     The middleware may not be properly configured or there's a bug in the extension mechanism. \
+                     Request: {} {}", 
+                    request_metric.raw.method,
+                    request_metric.raw.url
+                );
             }
         } else {
-            // Fallback for error cases - use elapsed time
+            // For error responses, we can't get TTFB from middleware, so use a reasonable fallback
+            // This is acceptable because the request failed entirely
             started.elapsed().as_millis() as u64
         };
         request_metric.time_to_first_byte = ttfb_time;
 
-        // Set response time to TTFB initially - this will be updated when the response body is consumed
-        request_metric.set_response_time(ttfb_time as u128);
+        // Set response time to the total elapsed time from request start
+        request_metric.set_response_time(started.elapsed().as_millis());
 
         // Determine if the request suceeded or failed.
         match &response {
