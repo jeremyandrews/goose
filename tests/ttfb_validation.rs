@@ -30,7 +30,6 @@ use httpmock::{Method::GET, Mock, MockServer};
 use serial_test::serial;
 use std::time::Duration;
 
-use goose::config::GooseConfiguration;
 use goose::goose::{Scenario, Transaction};
 use goose::metrics::GooseMetrics;
 use goose::prelude::*;
@@ -52,7 +51,7 @@ struct PathMetrics {
 }
 
 /// Set up mock server endpoints for TTFB validation testing
-fn setup_ttfb_test_endpoints(server: &MockServer) -> Vec<Mock> {
+fn setup_ttfb_test_endpoints(server: &MockServer) -> Vec<Mock<'_>> {
     vec![
         // Fast endpoint - minimal processing and response time
         server.mock(|when, then| {
@@ -91,23 +90,6 @@ fn setup_ttfb_test_endpoints(server: &MockServer) -> Vec<Mock> {
                 .body("1000ms delay");
         }),
     ]
-}
-
-/// Build configuration for TTFB validation tests
-fn build_ttfb_test_configuration(server: &MockServer) -> GooseConfiguration {
-    common::build_configuration(
-        server,
-        vec![
-            "--users",
-            "10",
-            "--hatch-rate",
-            "10",
-            "--run-time",
-            "5",
-            "--no-reset-metrics",
-            "--quiet",
-        ],
-    )
 }
 
 /// Extract TTFB and response time metrics for a specific path

@@ -1760,7 +1760,7 @@ impl GooseUser {
                 // Handle reqwest_middleware::Error by extracting the underlying reqwest::Error if possible
                 request_metric.error = match e {
                     reqwest_middleware::Error::Reqwest(reqwest_err) => {
-                        clean_reqwest_error(&reqwest_err, request_name)
+                        clean_reqwest_error(reqwest_err, request_name)
                     }
                     _ => format!("middleware error: {}", request_name),
                 };

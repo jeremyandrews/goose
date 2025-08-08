@@ -3591,11 +3591,7 @@ impl GooseAttack {
                     .get_markup(&self.metrics.history, test_start_time),
                 graph_average_response_time_template: &self
                     .graph_data
-                    .get_combined_response_ttfb_graph(
-                        !self.configuration.no_granular_report,
-                        &self.metrics.history,
-                        test_start_time,
-                    ),
+                    .get_combined_response_ttfb_graph(&self.metrics.history, test_start_time),
                 graph_users_per_second: &self
                     .graph_data
                     .get_active_users_graph(!self.configuration.no_granular_report)

@@ -200,44 +200,19 @@ impl GraphData {
         )
     }
 
-    /// Generate average response time graph.
-    pub(crate) fn get_average_response_time_graph(
-        &self,
-        granular_data: bool,
-    ) -> Graph<'_, MovingAverage, f32> {
-        self.create_graph_from_data(
-            "graph-avg-response-time",
-            "Response time [ms]",
-            granular_data,
-            self.average_response_time_per_second.clone(),
-        )
-    }
-
-    /// Generate average TTFB graph.
-    pub(crate) fn get_average_ttfb_graph(&self, granular_data: bool) -> Graph<MovingAverage, f32> {
-        self.create_graph_from_data(
-            "graph-avg-ttfb",
-            "TTFB [ms]",
-            granular_data,
-            self.average_ttfb_time_per_second.clone(),
-        )
-    }
-
     /// Generate combined response time and TTFB graph.
     pub(crate) fn get_combined_response_ttfb_graph(
         &self,
-        granular_data: bool,
         history: &[TestPlanHistory],
         test_started_time: DateTime<Utc>,
     ) -> String {
         // Create a combined graph that shows both response time and TTFB data
-        self.create_combined_response_ttfb_markup(granular_data, history, test_started_time)
+        self.create_combined_response_ttfb_markup(history, test_started_time)
     }
 
     /// Creates a combined graph with response time (solid lines) and TTFB (dashed lines).
     fn create_combined_response_ttfb_markup(
         &self,
-        granular_data: bool,
         history: &[TestPlanHistory],
         test_started_time: DateTime<Utc>,
     ) -> String {
@@ -1259,43 +1234,6 @@ mod test {
         );
         assert_eq!(users_graph.html_id, "graph-active-users");
         assert_eq!(users_graph.y_axis_label, "Active users #");
-
-        let avg_rt_graph = graph.get_average_response_time_graph(true);
-        let expected_time_series: TimeSeries<MovingAverage, f32> = TimeSeries {
-            data: vec![
-                MovingAverage {
-                    count: 123,
-                    average: 1.23,
-                },
-                MovingAverage {
-                    count: 234,
-                    average: 2.34,
-                },
-                MovingAverage {
-                    count: 345,
-                    average: 3.45,
-                },
-                MovingAverage {
-                    count: 456,
-                    average: 4.56,
-                },
-                MovingAverage {
-                    count: 567,
-                    average: 5.67,
-                },
-            ],
-            phantom: PhantomData,
-            total: MovingAverage {
-                count: 0,
-                average: 0.,
-            },
-        };
-        assert_eq!(
-            avg_rt_graph.data.get("GET /").unwrap().clone(),
-            expected_time_series
-        );
-        assert_eq!(avg_rt_graph.html_id, "graph-avg-response-time");
-        assert_eq!(avg_rt_graph.y_axis_label, "Response time [ms]");
 
         let transactions_graph = graph.get_transactions_per_second_graph(true);
         let expected_time_series: TimeSeries<usize, usize> = TimeSeries {
