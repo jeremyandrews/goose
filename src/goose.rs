@@ -287,6 +287,7 @@
 //! See the License for the specific language governing permissions and
 //! limitations under the License.
 
+use bytes::Bytes;
 use downcast_rs::{impl_downcast, Downcast};
 use regex::Regex;
 use reqwest::{header, Client, ClientBuilder, Method, RequestBuilder, Response};
@@ -715,7 +716,7 @@ pub fn goose_method_from_method(method: Method) -> Result<GooseMethod, Box<Trans
 #[derive(Debug)]
 pub struct GooseTimedResponse {
     inner: Response,
-    start_time: Instant,
+    ttfb_time: u64,
     request_metric: Arc<Mutex<GooseRequestMetric>>,
     metrics_channel: Option<flume::Sender<GooseMetric>>,
     timing_finalized: Arc<AtomicBool>,
@@ -725,56 +726,42 @@ impl GooseTimedResponse {
     /// Create a new timed response wrapper
     pub fn new(
         response: Response,
-        start_time: Instant,
+        _request_start: Instant,
+        ttfb_time: u64,
         request_metric: GooseRequestMetric,
         metrics_channel: Option<flume::Sender<GooseMetric>>,
     ) -> Self {
         Self {
             inner: response,
-            start_time,
+            ttfb_time,
             request_metric: Arc::new(Mutex::new(request_metric)),
             metrics_channel,
             timing_finalized: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Record the final timing when body consumption completes
-    fn record_final_timing(&self) {
-        // Only record once using atomic compare-and-swap
-        if !self.timing_finalized.swap(true, Ordering::Acquire) {
-            // NOW we have the actual response time including body download
-            let actual_response_time = self.start_time.elapsed().as_millis();
-
-            // Update the request metric with true response time
-            if let Ok(mut metric) = self.request_metric.lock() {
-                metric.set_response_time(actual_response_time);
-
-                // Send corrected metric to parent if channel exists
-                if let Some(channel) = &self.metrics_channel {
-                    let _ = channel.send(GooseMetric::Request(Box::new(metric.clone())));
-                }
-            }
-        }
-    }
-
     /// Consume the response body as text, recording final timing
     pub async fn text(self) -> Result<String, reqwest::Error> {
-        // Extract the fields we need before consuming self
-        let start_time = self.start_time;
+        // Extract fields before consuming self
+        let ttfb_time = self.ttfb_time;
         let request_metric = self.request_metric.clone();
         let metrics_channel = self.metrics_channel.clone();
         let timing_finalized = self.timing_finalized.clone();
 
+        // Measure body consumption time
+        let body_start = Instant::now();
+
         // Consume the response body
         let result = self.inner.text().await;
 
-        // Record timing after consuming the response
+        // Calculate body consumption time
+        let body_time = body_start.elapsed().as_millis() as u64;
+
+        // Record final timing with corrected calculation
         if !timing_finalized.swap(true, Ordering::Acquire) {
-            let actual_response_time = start_time.elapsed().as_millis();
-
+            let total_response_time = ttfb_time + body_time;
             if let Ok(mut metric) = request_metric.lock() {
-                metric.set_response_time(actual_response_time);
-
+                metric.set_response_time(total_response_time as u128);
                 if let Some(channel) = &metrics_channel {
                     let _ = channel.send(GooseMetric::Request(Box::new(metric.clone())));
                 }
@@ -784,31 +771,59 @@ impl GooseTimedResponse {
         result
     }
 
-    /// Get response body as bytes (placeholder implementation)
-    pub async fn bytes(&self) -> Result<Vec<u8>, reqwest::Error> {
-        // Placeholder implementation - in a real scenario we'd need to handle this properly
-        // For now, return empty bytes to avoid compilation issues
-        Ok(Vec::new())
-    }
-
-    /// Consume the response body as JSON, recording final timing
-    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, reqwest::Error> {
-        // Extract the fields we need before consuming self
-        let start_time = self.start_time;
+    /// Get response body as bytes, recording final timing
+    pub async fn bytes(self) -> Result<Bytes, reqwest::Error> {
+        // Extract fields before consuming self
+        let ttfb_time = self.ttfb_time;
         let request_metric = self.request_metric.clone();
         let metrics_channel = self.metrics_channel.clone();
         let timing_finalized = self.timing_finalized.clone();
 
+        // Measure body consumption time
+        let body_start = Instant::now();
+
+        // Consume the response body
+        let result = self.inner.bytes().await;
+
+        // Calculate body consumption time
+        let body_time = body_start.elapsed().as_millis() as u64;
+
+        // Record final timing with corrected calculation
+        if !timing_finalized.swap(true, Ordering::Acquire) {
+            let total_response_time = ttfb_time + body_time;
+            if let Ok(mut metric) = request_metric.lock() {
+                metric.set_response_time(total_response_time as u128);
+                if let Some(channel) = &metrics_channel {
+                    let _ = channel.send(GooseMetric::Request(Box::new(metric.clone())));
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Consume the response body as JSON, recording final timing
+    pub async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, reqwest::Error> {
+        // Extract fields before consuming self
+        let ttfb_time = self.ttfb_time;
+        let request_metric = self.request_metric.clone();
+        let metrics_channel = self.metrics_channel.clone();
+        let timing_finalized = self.timing_finalized.clone();
+
+        // Measure body consumption time
+        let body_start = Instant::now();
+
         // Consume the response body
         let result = self.inner.json().await;
 
-        // Record timing after consuming the response
+        // Calculate body consumption time
+        let body_time = body_start.elapsed().as_millis() as u64;
+
+        // Record final timing with corrected calculation
         if !timing_finalized.swap(true, Ordering::Acquire) {
-            let actual_response_time = start_time.elapsed().as_millis();
-
+            let total_response_time = ttfb_time + body_time;
             if let Ok(mut metric) = request_metric.lock() {
-                metric.set_response_time(actual_response_time);
-
+                metric.set_response_time(total_response_time as u128);
                 if let Some(channel) = &metrics_channel {
                     let _ = channel.send(GooseMetric::Request(Box::new(metric.clone())));
                 }
@@ -1919,6 +1934,7 @@ impl GooseUser {
             Ok(resp) => Ok(GooseTimedResponse::new(
                 resp,
                 started,
+                ttfb_time,
                 request_metric.clone(),
                 self.metrics_channel.clone(),
             )),
