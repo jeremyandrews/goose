@@ -843,6 +843,26 @@ impl GooseTimedResponse {
         self.inner.content_length()
     }
 
+    /// Get cookies from the response
+    pub fn cookies(&self) -> impl Iterator<Item = reqwest::cookie::Cookie<'_>> + '_ {
+        self.inner.cookies()
+    }
+
+    /// Get remote address
+    pub fn remote_addr(&self) -> Option<std::net::SocketAddr> {
+        self.inner.remote_addr()
+    }
+
+    /// Get extensions
+    pub fn extensions(&self) -> &http::Extensions {
+        self.inner.extensions()
+    }
+
+    /// Get mutable extensions
+    pub fn extensions_mut(&mut self) -> &mut http::Extensions {
+        self.inner.extensions_mut()
+    }
+
     /// Convert into the inner Response (timing will not be recorded)
     pub fn into_inner(self) -> Response {
         self.inner
@@ -1811,13 +1831,13 @@ impl GooseUser {
         // Make the actual request
         let response = self.client.execute(built_request).await;
 
-        // TTFB (Time to First Byte) is captured immediately when headers arrive
-        // This is the correct timing point - when response headers are received, before body download
+        // TTFB (Time to First Byte) is captured when headers arrive
         let ttfb_time = started.elapsed().as_millis() as u64;
         request_metric.time_to_first_byte = ttfb_time;
 
-        // Set response time to the total elapsed time from request start
-        request_metric.set_response_time(started.elapsed().as_millis());
+        // Response time will be captured later by the Smart Response Wrapper
+        // when the user actually consumes the response body (.text(), .json(), etc.)
+        // DO NOT set response_time here - this was the bug!
 
         // Determine if the request suceeded or failed.
         match &response {
