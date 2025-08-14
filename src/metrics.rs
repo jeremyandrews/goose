@@ -363,6 +363,8 @@ pub struct GooseRequestMetric {
     pub raw: GooseRawRequest,
     /// The optional name of the request.
     pub name: String,
+    /// Pre-computed key for aggregation, eliminating the need for string formatting in hot paths.
+    pub formatted_key: String,
     /// The final full URL that was requested, after redirects.
     pub final_url: String,
     /// Whether or not the request was redirected.
@@ -395,6 +397,8 @@ impl GooseRequestMetric {
         elapsed: u128,
         user: usize,
     ) -> Self {
+        let formatted_key = format!("{} {}", raw.method, name);
+
         GooseRequestMetric {
             elapsed: elapsed as u64,
             scenario_index: transaction_detail.scenario_index,
@@ -403,6 +407,7 @@ impl GooseRequestMetric {
             transaction_name: transaction_detail.transaction_name,
             raw,
             name: name.to_string(),
+            formatted_key,
             final_url: "".to_string(),
             redirected: false,
             response_time: 0,
@@ -2806,8 +2811,8 @@ impl GooseAttack {
     // `GooseMetrics.requests` `HashMap`, merging if already existing, or creating new.
     // Also writes it to the request_file if enabled.
     async fn record_request_metric(&mut self, request_metric: &GooseRequestMetric) {
-        let key = format!("{} {}", request_metric.raw.method, request_metric.name);
-        let mut merge_request = match self.metrics.requests.get(&key) {
+        let key = &request_metric.formatted_key;
+        let mut merge_request = match self.metrics.requests.get(key) {
             Some(m) => m.clone(),
             None => GooseRequestMetricAggregate::new(
                 &request_metric.name,
@@ -2842,7 +2847,7 @@ impl GooseAttack {
             }
         }
 
-        self.metrics.requests.insert(key, merge_request);
+        self.metrics.requests.insert(key.to_string(), merge_request);
     }
 
     // Receive metrics from [`GooseUser`](./goose/struct.GooseUser.html) threads. If flush
