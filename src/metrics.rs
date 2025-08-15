@@ -29,6 +29,7 @@ use regex::RegexSet;
 use reqwest::StatusCode;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -364,7 +365,7 @@ pub struct GooseRequestMetric {
     /// The optional name of the request.
     pub name: String,
     /// Pre-computed key for aggregation, eliminating the need for string formatting in hot paths.
-    pub formatted_key: String,
+    pub formatted_key: Cow<'static, str>,
     /// The final full URL that was requested, after redirects.
     pub final_url: String,
     /// Whether or not the request was redirected.
@@ -397,7 +398,7 @@ impl GooseRequestMetric {
         elapsed: u128,
         user: usize,
     ) -> Self {
-        let formatted_key = format!("{} {}", raw.method, name);
+        let formatted_key = Cow::Owned(format!("{} {}", raw.method, name));
 
         GooseRequestMetric {
             elapsed: elapsed as u64,
@@ -2811,7 +2812,7 @@ impl GooseAttack {
     // `GooseMetrics.requests` `HashMap`, merging if already existing, or creating new.
     // Also writes it to the request_file if enabled.
     async fn record_request_metric(&mut self, request_metric: &GooseRequestMetric) {
-        let key = &request_metric.formatted_key;
+        let key = request_metric.formatted_key.as_ref();
         let mut merge_request = match self.metrics.requests.get(key) {
             Some(m) => m.clone(),
             None => GooseRequestMetricAggregate::new(
