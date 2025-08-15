@@ -1600,12 +1600,8 @@ impl GooseUser {
             }
         };
 
-        // Grab a copy of any headers set by this request, included in the request log
-        // and the debug log.
-        let mut headers: Vec<String> = Vec::new();
-        for header in built_request.headers() {
-            headers.push(format!("{header:?}"));
-        }
+        // Note: Headers are now stored directly as HeaderMap in GooseRawRequest
+        // and formatted only when needed via the formatted_headers() method
 
         // If enabled, grab a copy of the request body, included in the request log and
         // the debug log.
@@ -1625,8 +1621,8 @@ impl GooseUser {
         let raw_request = GooseRawRequest::new(
             goose_method_from_method(built_request.method().clone())?,
             built_request.url().as_str(),
-            headers,
-            body,
+            built_request.headers().clone(),
+            &body,
         );
 
         // Provide details about the current transaction for logging.

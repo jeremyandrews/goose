@@ -26,7 +26,7 @@ use chrono::prelude::*;
 use itertools::Itertools;
 use num_format::{Locale, ToFormattedString};
 use regex::RegexSet;
-use reqwest::StatusCode;
+use reqwest::{header::HeaderMap, StatusCode};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -299,14 +299,14 @@ pub type GooseErrorMetrics = BTreeMap<String, GooseErrorMetricAggregate>;
 ///
 /// The raw request that the GooseClient is making. Is included in the [`GooseRequestMetric`]
 /// when metrics are enabled.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GooseRawRequest {
     /// The method being used (ie, Get, Post, etc).
     pub method: GooseMethod,
     /// The full URL that was requested.
     pub url: String,
     /// Any headers set by the client when making the request.
-    pub headers: Vec<String>,
+    pub headers: HeaderMap,
     /// The body of the request made, if `--request-body` is enabled.
     pub body: String,
 }
@@ -314,7 +314,7 @@ impl GooseRawRequest {
     pub(crate) fn new(
         method: GooseMethod,
         url: &str,
-        headers: Vec<String>,
+        headers: HeaderMap,
         body: &str,
     ) -> GooseRawRequest {
         GooseRawRequest {
@@ -323,6 +323,116 @@ impl GooseRawRequest {
             headers,
             body: body.to_string(),
         }
+    }
+
+    /// Format headers as strings only when needed for logging/debugging.
+    /// This avoids the expensive string formatting unless actually required.
+    pub fn formatted_headers(&self) -> Vec<String> {
+        self.headers
+            .iter()
+            .map(|header| format!("{header:?}"))
+            .collect()
+    }
+}
+
+impl Serialize for GooseRawRequest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("GooseRawRequest", 4)?;
+        state.serialize_field("method", &self.method)?;
+        state.serialize_field("url", &self.url)?;
+        // Convert HeaderMap to Vec<String> for serialization
+        state.serialize_field("headers", &self.formatted_headers())?;
+        state.serialize_field("body", &self.body)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GooseRawRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "lowercase")]
+        enum Field {
+            Method,
+            Url,
+            Headers,
+            Body,
+        }
+
+        struct GooseRawRequestVisitor;
+
+        impl<'de> Visitor<'de> for GooseRawRequestVisitor {
+            type Value = GooseRawRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct GooseRawRequest")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<GooseRawRequest, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut method = None;
+                let mut url = None;
+                let mut headers: Option<Vec<String>> = None;
+                let mut body = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::Method => {
+                            if method.is_some() {
+                                return Err(de::Error::duplicate_field("method"));
+                            }
+                            method = Some(map.next_value()?);
+                        }
+                        Field::Url => {
+                            if url.is_some() {
+                                return Err(de::Error::duplicate_field("url"));
+                            }
+                            url = Some(map.next_value()?);
+                        }
+                        Field::Headers => {
+                            if headers.is_some() {
+                                return Err(de::Error::duplicate_field("headers"));
+                            }
+                            headers = Some(map.next_value()?);
+                        }
+                        Field::Body => {
+                            if body.is_some() {
+                                return Err(de::Error::duplicate_field("body"));
+                            }
+                            body = Some(map.next_value()?);
+                        }
+                    }
+                }
+
+                let method = method.ok_or_else(|| de::Error::missing_field("method"))?;
+                let url = url.ok_or_else(|| de::Error::missing_field("url"))?;
+                let _headers = headers.ok_or_else(|| de::Error::missing_field("headers"))?;
+                let body = body.ok_or_else(|| de::Error::missing_field("body"))?;
+
+                // For deserialization, we create an empty HeaderMap since we can't easily
+                // reconstruct the original HeaderMap from formatted strings
+                Ok(GooseRawRequest {
+                    method,
+                    url,
+                    headers: HeaderMap::new(),
+                    body,
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["method", "url", "headers", "body"];
+        deserializer.deserialize_struct("GooseRawRequest", FIELDS, GooseRawRequestVisitor)
     }
 }
 
@@ -3651,7 +3761,7 @@ mod test {
     #[test]
     fn goose_raw_request() {
         const PATH: &str = "http://127.0.0.1/";
-        let raw_request = GooseRawRequest::new(GooseMethod::Get, PATH, vec![], "");
+        let raw_request = GooseRawRequest::new(GooseMethod::Get, PATH, HeaderMap::new(), "");
         let mut request_metric = GooseRequestMetric::new(
             raw_request,
             TransactionDetail {
