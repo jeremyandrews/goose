@@ -3636,6 +3636,242 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_goose_raw_request_header_storage() {
+        // Create a HeaderMap with some test headers
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "content-type",
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            "user-agent",
+            reqwest::header::HeaderValue::from_static("goose/test"),
+        );
+        headers.insert(
+            "x-custom-header",
+            reqwest::header::HeaderValue::from_static("test-value"),
+        );
+
+        // Create a GooseRawRequest
+        let raw_request = GooseRawRequest::new(
+            GooseMethod::Post,
+            "https://example.com/api/test",
+            headers.clone(),
+            r#"{"test": "data"}"#,
+        );
+
+        // Verify that headers are stored as HeaderMap
+        assert_eq!(raw_request.headers.len(), 3);
+        assert_eq!(
+            raw_request.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+        assert_eq!(raw_request.headers.get("user-agent").unwrap(), "goose/test");
+        assert_eq!(
+            raw_request.headers.get("x-custom-header").unwrap(),
+            "test-value"
+        );
+
+        // Verify that formatted_headers() works correctly
+        let formatted = raw_request.formatted_headers();
+        assert_eq!(formatted.len(), 3);
+
+        // Headers should be formatted as debug strings
+        let formatted_str = formatted.join(", ");
+        assert!(formatted_str.contains("content-type"));
+        assert!(formatted_str.contains("application/json"));
+        assert!(formatted_str.contains("user-agent"));
+        assert!(formatted_str.contains("goose/test"));
+        assert!(formatted_str.contains("x-custom-header"));
+        assert!(formatted_str.contains("test-value"));
+    }
+
+    #[test]
+    fn test_goose_raw_request_empty_headers() {
+        let empty_headers = HeaderMap::new();
+        let raw_request =
+            GooseRawRequest::new(GooseMethod::Get, "https://example.com/", empty_headers, "");
+
+        assert_eq!(raw_request.headers.len(), 0);
+        assert_eq!(raw_request.formatted_headers().len(), 0);
+    }
+
+    #[test]
+    fn test_goose_raw_request_serialization() {
+        // Create a HeaderMap with test headers
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            reqwest::header::HeaderValue::from_static("Bearer token123"),
+        );
+        headers.insert(
+            "accept",
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        let raw_request = GooseRawRequest::new(
+            GooseMethod::Put,
+            "https://api.example.com/users/123",
+            headers,
+            r#"{"name": "updated"}"#,
+        );
+
+        // Test serialization
+        let serialized = serde_json::to_string(&raw_request).expect("Failed to serialize");
+
+        // Verify that the serialized JSON contains formatted headers
+        assert!(serialized.contains("\"method\":\"Put\""));
+        assert!(serialized.contains("\"url\":\"https://api.example.com/users/123\""));
+        assert!(serialized.contains("\"body\":\"{\\\"name\\\": \\\"updated\\\"}\""));
+        assert!(serialized.contains("\"headers\":["));
+        assert!(serialized.contains("authorization"));
+        assert!(serialized.contains("Bearer token123"));
+        assert!(serialized.contains("accept"));
+        assert!(serialized.contains("application/json"));
+    }
+
+    #[test]
+    fn test_goose_raw_request_deserialization() {
+        // Create JSON that represents a serialized GooseRawRequest
+        let json_data = r#"{
+            "method": "Post",
+            "url": "https://example.com/api",
+            "headers": ["content-type: application/json", "user-agent: goose/test"],
+            "body": "{\"test\": true}"
+        }"#;
+
+        // Test deserialization
+        let deserialized: GooseRawRequest =
+            serde_json::from_str(json_data).expect("Failed to deserialize");
+
+        // Verify basic fields
+        assert_eq!(deserialized.method, GooseMethod::Post);
+        assert_eq!(deserialized.url, "https://example.com/api");
+        assert_eq!(deserialized.body, r#"{"test": true}"#);
+
+        // Headers should be empty after deserialization (as documented)
+        assert_eq!(deserialized.headers.len(), 0);
+        assert_eq!(deserialized.formatted_headers().len(), 0);
+    }
+
+    #[test]
+    fn test_header_formatting_performance() {
+        // Create a HeaderMap with many headers to test performance characteristics
+        let mut headers = HeaderMap::new();
+        for i in 0..100 {
+            let header_name = format!("x-test-header-{}", i);
+            let header_value = format!("test-value-{}", i);
+            headers.insert(
+                reqwest::header::HeaderName::from_bytes(header_name.as_bytes()).unwrap(),
+                reqwest::header::HeaderValue::from_str(&header_value).unwrap(),
+            );
+        }
+
+        let raw_request =
+            GooseRawRequest::new(GooseMethod::Get, "https://example.com/test", headers, "");
+
+        // Verify that headers are stored efficiently
+        assert_eq!(raw_request.headers.len(), 100);
+
+        // Verify that formatting only happens when called
+        let start = std::time::Instant::now();
+        let formatted = raw_request.formatted_headers();
+        let duration = start.elapsed();
+
+        // Should format all headers
+        assert_eq!(formatted.len(), 100);
+
+        // Should complete reasonably quickly (this is more of a smoke test)
+        assert!(
+            duration.as_millis() < 100,
+            "Header formatting took too long: {:?}",
+            duration
+        );
+    }
+
+    #[test]
+    fn test_header_formatting_special_characters() {
+        let mut headers = HeaderMap::new();
+
+        // Test headers with special characters that might cause formatting issues
+        headers.insert(
+            "x-special-chars",
+            reqwest::header::HeaderValue::from_static("value with spaces"),
+        );
+        headers.insert(
+            "x-unicode",
+            reqwest::header::HeaderValue::from_bytes(b"caf\xc3\xa9").unwrap(),
+        ); // café in UTF-8
+        headers.insert(
+            "x-quotes",
+            reqwest::header::HeaderValue::from_static(r#"value"with"quotes"#),
+        );
+
+        let raw_request =
+            GooseRawRequest::new(GooseMethod::Get, "https://example.com/", headers, "");
+
+        let formatted = raw_request.formatted_headers();
+        assert_eq!(formatted.len(), 3);
+
+        // Verify that all headers are formatted (exact format may vary)
+        let formatted_str = formatted.join(" ");
+        assert!(formatted_str.contains("x-special-chars"));
+        assert!(formatted_str.contains("x-unicode"));
+        assert!(formatted_str.contains("x-quotes"));
+    }
+
+    #[test]
+    fn test_backward_compatibility() {
+        // This test ensures that the API changes don't break existing usage patterns
+
+        // Test that GooseRawRequest can still be created and used as before
+        let headers = HeaderMap::new();
+        let raw_request =
+            GooseRawRequest::new(GooseMethod::Get, "https://example.com/", headers, "");
+
+        // These should all work as before
+        assert_eq!(raw_request.method, GooseMethod::Get);
+        assert_eq!(raw_request.url, "https://example.com/");
+        assert_eq!(raw_request.body, "");
+        assert_eq!(raw_request.headers.len(), 0);
+
+        // New method should work
+        assert_eq!(raw_request.formatted_headers().len(), 0);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_data_integrity() {
+        // Test that important data survives serialization/deserialization
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            reqwest::header::HeaderValue::from_static("Bearer secret"),
+        );
+
+        let original = GooseRawRequest::new(
+            GooseMethod::Post,
+            "https://api.example.com/data",
+            headers,
+            r#"{"sensitive": "data"}"#,
+        );
+
+        // Serialize
+        let serialized = serde_json::to_string(&original).unwrap();
+
+        // Deserialize
+        let deserialized: GooseRawRequest = serde_json::from_str(&serialized).unwrap();
+
+        // Verify that critical data is preserved
+        assert_eq!(original.method, deserialized.method);
+        assert_eq!(original.url, deserialized.url);
+        assert_eq!(original.body, deserialized.body);
+
+        // Note: Headers are intentionally not preserved in deserialization
+        // This is acceptable for the use case (metrics analysis)
+        assert_eq!(deserialized.headers.len(), 0);
+    }
+
+    #[test]
     fn max_response_time() {
         let mut max_response_time = 99;
         // Update max response time to a higher value.
