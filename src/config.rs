@@ -198,6 +198,51 @@ pub struct GooseConfiguration {
     /// Disables validation of https certificates
     #[options(no_short)]
     pub accept_invalid_certs: bool,
+
+    // Gaggle (distributed load testing) options
+    // Add a blank line and then a 'Distributed Testing (Gaggle):' header before gaggle options
+    #[cfg(feature = "gaggle")]
+    #[options(
+        no_short,
+        help = "Run as distributed load test manager\\n\\nDistributed Testing (Gaggle):"
+    )]
+    /// Run as distributed load test manager
+    pub manager: bool,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "HOST")]
+    /// Manager bind host (default: 0.0.0.0)
+    pub manager_bind_host: String,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "PORT")]
+    /// Manager bind port (default: 5115)
+    pub manager_bind_port: u16,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short)]
+    /// Run as distributed load test worker
+    pub worker: bool,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "HOST")]
+    /// Manager host to connect to (for workers)
+    pub manager_host: String,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "PORT")]
+    /// Manager port to connect to (default: 5115)
+    pub manager_port: u16,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "COUNT")]
+    /// Number of workers expected to connect
+    pub expect_workers: Option<u32>,
+
+    #[cfg(feature = "gaggle")]
+    #[options(no_short, meta = "ID")]
+    /// Optional worker identifier
+    pub worker_id: Option<String>,
 }
 
 /// Optionally defines a subset of active Scenarios to run during a load test.

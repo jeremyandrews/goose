@@ -52,7 +52,7 @@ impl GaggleWorker {
     }
 
     /// Connect to the manager and start the worker
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let manager_addr = format!("http://{}", self.config.manager_address()?);
         info!("Connecting to manager at {}", manager_addr);
 
@@ -84,7 +84,7 @@ impl GaggleWorker {
     }
 
     /// Register this worker with the manager
-    async fn register(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn register(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut client_guard = self.client.lock().await;
         let client = client_guard.as_mut().ok_or("Client not connected")?;
 
@@ -122,7 +122,9 @@ impl GaggleWorker {
     }
 
     /// Start the coordination stream with the manager
-    async fn start_coordination_stream(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn start_coordination_stream(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut client_guard = self.client.lock().await;
         let client = client_guard.as_mut().ok_or("Client not connected")?;
 
@@ -218,7 +220,9 @@ impl GaggleWorker {
     }
 
     /// Start the metrics submission task
-    async fn start_metrics_submission(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn start_metrics_submission(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let client = Arc::clone(&self.client);
         let metrics_buffer = Arc::clone(&self.metrics_buffer);
         let worker_id = self
@@ -277,7 +281,7 @@ impl GaggleWorker {
     }
 
     /// Start the heartbeat task
-    async fn start_heartbeat(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn start_heartbeat(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let state = Arc::clone(&self.state);
         let heartbeat_interval = self.config.heartbeat_interval;
 

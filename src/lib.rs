@@ -939,6 +939,92 @@ impl GooseAttack {
         }
     }
 
+    /// Execute Goose in gaggle manager mode.
+    #[cfg(feature = "gaggle")]
+    async fn execute_gaggle_manager(self) -> Result<GooseMetrics, GooseError> {
+        use crate::gaggle::{config::GaggleConfiguration, manager::GaggleManager};
+
+        info!("Starting Goose in gaggle manager mode");
+
+        // Create gaggle configuration from GooseConfiguration
+        let mut gaggle_config = GaggleConfiguration::new().set_manager();
+
+        // Set the manager bind address and port
+        gaggle_config.manager_host = self.configuration.manager_bind_host.clone();
+        gaggle_config.manager_port = self.configuration.manager_bind_port;
+
+        // Validate gaggle configuration
+        if let Err(e) = gaggle_config.validate() {
+            return Err(GooseError::InvalidOption {
+                option: "--manager".to_string(),
+                value: "true".to_string(),
+                detail: format!("Gaggle manager configuration error: {}", e),
+            });
+        }
+
+        // Create and start the gaggle manager
+        let manager = GaggleManager::new(gaggle_config);
+
+        // Start the manager gRPC server
+        if let Err(e) = manager.start().await {
+            return Err(GooseError::InvalidOption {
+                option: "--manager".to_string(),
+                value: "true".to_string(),
+                detail: format!("Failed to start gaggle manager: {}", e),
+            });
+        }
+
+        // For now, return empty metrics as the manager doesn't generate its own load test metrics
+        // In a complete implementation, the manager would coordinate the test and aggregate worker metrics
+        info!("Gaggle manager started successfully");
+        Ok(GooseMetrics::default())
+    }
+
+    /// Execute Goose in gaggle worker mode.
+    #[cfg(feature = "gaggle")]
+    async fn execute_gaggle_worker(self) -> Result<GooseMetrics, GooseError> {
+        use crate::gaggle::{config::GaggleConfiguration, worker::GaggleWorker};
+
+        info!("Starting Goose in gaggle worker mode");
+
+        // Create gaggle configuration from GooseConfiguration
+        let mut gaggle_config =
+            GaggleConfiguration::new().set_worker(&self.configuration.manager_host);
+
+        // Set worker ID if provided
+        if let Some(worker_id) = &self.configuration.worker_id {
+            gaggle_config = gaggle_config.set_worker_id(worker_id);
+        }
+
+        gaggle_config.manager_port = self.configuration.manager_port;
+
+        // Validate gaggle configuration
+        if let Err(e) = gaggle_config.validate() {
+            return Err(GooseError::InvalidOption {
+                option: "--worker".to_string(),
+                value: "true".to_string(),
+                detail: format!("Gaggle worker configuration error: {}", e),
+            });
+        }
+
+        // Create and start the gaggle worker
+        let worker = GaggleWorker::new(gaggle_config);
+
+        // Connect to manager and start worker operations
+        if let Err(e) = worker.start().await {
+            return Err(GooseError::InvalidOption {
+                option: "--worker".to_string(),
+                value: "true".to_string(),
+                detail: format!("Failed to start gaggle worker: {}", e),
+            });
+        }
+
+        // For now, return empty metrics as the worker sends metrics to the manager
+        // In a complete implementation, the worker would execute its portion of the load test
+        info!("Gaggle worker started successfully and connected to manager");
+        Ok(GooseMetrics::default())
+    }
+
     /// Execute the [`GooseAttack`](./struct.GooseAttack.html) load test.
     ///
     /// # Example
@@ -974,7 +1060,25 @@ impl GooseAttack {
     ///     Ok(())
     /// }
     /// ```
-    pub async fn execute(mut self) -> Result<GooseMetrics, GooseError> {
+    pub async fn execute(self) -> Result<GooseMetrics, GooseError> {
+        // Check if this should run in gaggle mode
+        #[cfg(feature = "gaggle")]
+        {
+            if self.configuration.manager {
+                return self.execute_gaggle_manager().await;
+            } else if self.configuration.worker {
+                return self.execute_gaggle_worker().await;
+            }
+        }
+
+        // Continue with standalone execution
+        self.execute_standalone().await
+    }
+
+    /// Execute the [`GooseAttack`](./struct.GooseAttack.html) load test in standalone mode.
+    ///
+    /// This method contains the original execute() logic for single-node operation.
+    async fn execute_standalone(mut self) -> Result<GooseMetrics, GooseError> {
         // If version flag is set, display package name and version and exit.
         if self.configuration.version {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));

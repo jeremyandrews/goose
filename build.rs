@@ -13,7 +13,7 @@ fn main() {
 #[cfg(feature = "gaggle")]
 fn compile_protos() {
     println!("cargo:rerun-if-changed=proto/gaggle.proto");
-    
+
     // Use tonic_prost_build - the correct API for tonic 0.14
     #[cfg(feature = "gaggle")]
     {
