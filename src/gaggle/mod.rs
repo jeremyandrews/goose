@@ -23,17 +23,21 @@ pub use manager::GaggleManager;
 #[cfg(feature = "gaggle")]
 pub use worker::GaggleWorker;
 
-// Re-export generated protobuf types
+// Generated protobuf code - this is where the gRPC services are defined
+#[cfg(feature = "gaggle")]
+pub mod gaggle_proto {
+    tonic::include_proto!("gaggle");
+}
+
 #[cfg(feature = "gaggle")]
 pub use gaggle_proto::*;
 
+// Re-export the generated service modules for easier access
 #[cfg(feature = "gaggle")]
-mod gaggle_proto {
-    include!(concat!(env!("OUT_DIR"), "/gaggle.rs"));
-}
-
-// Generated gRPC service definitions are now included from the build output
-// The tonic-prost-build system generates the necessary server and client modules
+pub use gaggle_proto::{
+    gaggle_service_client::GaggleServiceClient,
+    gaggle_service_server::{GaggleService, GaggleServiceServer},
+};
 
 // Provide helpful error messages when gaggle features are used without the feature flag
 #[cfg(not(feature = "gaggle"))]

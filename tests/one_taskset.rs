@@ -184,7 +184,18 @@ async fn run_gaggle_test(test_type: TestType) {
     let mock_endpoints = setup_mock_server_endpoints(&server);
 
     // Each worker has the same identical configuration.
-    let worker_configuration = common::build_configuration(&server, vec!["--worker"]);
+    let worker_configuration = common::build_configuration(
+        &server,
+        vec![
+            "--worker",
+            "--manager-host",
+            "127.0.0.1",
+            "--manager-port",
+            "0",
+            "--worker-id",
+            "test-worker",
+        ],
+    );
 
     // Workers launched in own threads, store thread handles.
     let worker_handles = common::launch_gaggle_workers(EXPECT_WORKERS, || {
@@ -202,6 +213,10 @@ async fn run_gaggle_test(test_type: TestType) {
             &server,
             &mut vec![
                 "--manager",
+                "--manager-bind-host",
+                "127.0.0.1",
+                "--manager-bind-port",
+                "0",
                 "--expect-workers",
                 &EXPECT_WORKERS.to_string(),
                 "--no-reset-metrics",
@@ -209,7 +224,15 @@ async fn run_gaggle_test(test_type: TestType) {
         ),
         TestType::ResetMetrics => common_build_configuration(
             &server,
-            &mut vec!["--manager", "--expect-workers", &EXPECT_WORKERS.to_string()],
+            &mut vec![
+                "--manager",
+                "--manager-bind-host",
+                "127.0.0.1",
+                "--manager-bind-port",
+                "0",
+                "--expect-workers",
+                &EXPECT_WORKERS.to_string(),
+            ],
         ),
     };
 
@@ -239,10 +262,10 @@ async fn test_one_scenario() {
     run_standalone_test(TestType::NoResetMetrics).await;
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 // Test a single scenario with multiple weighted transactions, in Gaggle mode.
+// Requires the 'gaggle' feature to be enabled: cargo test --features gaggle
 async fn test_one_scenario_gaggle() {
     run_gaggle_test(TestType::NoResetMetrics).await;
 }
@@ -253,13 +276,13 @@ async fn test_one_scenario_reset_metrics() {
     run_standalone_test(TestType::ResetMetrics).await;
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[serial]
 // Test a single scenario with multiple weighted transactions, enable --no-reset-metrics
 // in Gaggle mode.
 // @TODO: @FIXME: Goose is not resetting metrics when running in Gaggle mode.
 // Issue: https://github.com/tag1consulting/goose/issues/193
+// Requires the 'gaggle' feature to be enabled: cargo test --features gaggle
 async fn test_one_senario_reset_metrics_gaggle() {
     run_gaggle_test(TestType::ResetMetrics).await;
 }
