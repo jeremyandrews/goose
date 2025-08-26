@@ -14,7 +14,7 @@ use tonic::{Request, Streaming};
 /// Gaggle Worker for executing distributed load tests
 pub struct GaggleWorker {
     config: GaggleConfiguration,
-    client: Arc<Mutex<Option<gaggle_service_client::GaggleServiceClient<Channel>>>>,
+    client: Arc<Mutex<Option<GaggleServiceClient<Channel>>>>,
     state: Arc<RwLock<WorkerStateInfo>>,
     metrics_buffer: Arc<Mutex<Vec<MetricsBatch>>>,
 }
@@ -61,7 +61,7 @@ impl GaggleWorker {
             .connect()
             .await?;
 
-        let client = gaggle_service_client::GaggleServiceClient::new(channel);
+        let client = GaggleServiceClient::new(channel);
         *self.client.lock().await = Some(client);
 
         // Register with manager

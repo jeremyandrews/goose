@@ -2,7 +2,7 @@
 name = "goose"
 version = "0.19.0-dev"
 authors = ["Jeremy Andrews <jeremy@tag1consulting.com>"]
-edition = "2018"
+edition = "2021"
 description = "A load testing framework inspired by Locust."
 homepage = "https://tag1.com/goose"
 documentation = "https://book.goose.rs"

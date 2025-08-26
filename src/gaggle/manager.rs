@@ -52,7 +52,7 @@ impl GaggleManager {
         };
 
         Server::builder()
-            .add_service(gaggle_service_server::GaggleServiceServer::new(service))
+            .add_service(GaggleServiceServer::new(service))
             .serve(addr)
             .await?;
 
@@ -88,7 +88,7 @@ struct GaggleServiceImpl {
 }
 
 #[tonic::async_trait]
-impl gaggle_service_server::GaggleService for GaggleServiceImpl {
+impl GaggleService for GaggleServiceImpl {
     async fn register_worker(
         &self,
         request: Request<super::gaggle_proto::WorkerInfo>,
