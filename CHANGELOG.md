@@ -7,7 +7,6 @@
     o users requiring the old behavior must switch to `set_name_for_transaction_and_requests()`
     o introduces `TransactionName` enum with `TransactionOnly` and `InheritNameByRequests` variants
  - [#578](https://github.com/tag1consulting/goose/pull/578) add type-safe client builder for cookie configuration, optimize startup with shared clients
-
  - **baseline comparison functionality**: compare current load test results against previously saved JSON reports to identify performance regressions and track improvements over time using `--baseline-file`
 
 ## 0.18.1 August 14, 2025
