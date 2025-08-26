@@ -3,6 +3,7 @@
 //! The Manager coordinates multiple Workers in a distributed load test.
 
 use super::{gaggle_proto::*, GaggleConfiguration};
+use crate::gaggle::gaggle_service_server::{GaggleService, GaggleServiceServer};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -115,7 +116,7 @@ impl GaggleService for GaggleServiceImpl {
                 ip_address: worker_info.ip_address,
                 max_users: worker_info.max_users,
                 capabilities: worker_info.capabilities,
-                state: super::gaggle_proto::WorkerState::WorkerStateIdle,
+                state: super::gaggle_proto::WorkerState::Idle,
                 active_users: 0,
                 last_heartbeat: std::time::Instant::now(),
             },
@@ -163,7 +164,7 @@ impl GaggleService for GaggleServiceImpl {
 
                         // Send heartbeat response
                         let heartbeat = ManagerCommand {
-                            command_type: CommandType::CommandTypeHeartbeat.into(),
+                            command_type: CommandType::Heartbeat.into(),
                             test_config: None,
                             user_count: None,
                             message: Some("Heartbeat".to_string()),

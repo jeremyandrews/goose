@@ -3,6 +3,7 @@
 //! The Worker connects to a Manager and executes distributed load test tasks.
 
 use super::{gaggle_proto::*, GaggleConfiguration};
+use crate::gaggle::gaggle_service_client::GaggleServiceClient;
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
@@ -31,7 +32,7 @@ struct WorkerStateInfo {
 impl Default for WorkerStateInfo {
     fn default() -> Self {
         Self {
-            state: super::gaggle_proto::WorkerState::WorkerStateIdle,
+            state: super::gaggle_proto::WorkerState::Idle,
             active_users: 0,
             registered: false,
             last_heartbeat: None,
@@ -146,7 +147,7 @@ impl GaggleWorker {
             // Send initial status
             let initial_update = WorkerUpdate {
                 worker_id: worker_id.clone(),
-                state: super::gaggle_proto::WorkerState::WorkerStateReady.into(),
+                state: super::gaggle_proto::WorkerState::Ready.into(),
                 active_users: 0,
                 error_message: None,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
@@ -181,29 +182,29 @@ impl GaggleWorker {
     /// Handle commands received from the manager
     async fn handle_manager_command(command: ManagerCommand, state: Arc<RwLock<WorkerStateInfo>>) {
         match command.command_type() {
-            CommandType::CommandTypeStart => {
+            CommandType::Start => {
                 info!("Received START command");
-                state.write().await.state = super::gaggle_proto::WorkerState::WorkerStateRunning;
+                state.write().await.state = super::gaggle_proto::WorkerState::Running;
                 // Implementation for starting load test will be added in later phases
             }
-            CommandType::CommandTypeStop => {
+            CommandType::Stop => {
                 info!("Received STOP command");
-                state.write().await.state = super::gaggle_proto::WorkerState::WorkerStateStopping;
+                state.write().await.state = super::gaggle_proto::WorkerState::Stopping;
                 // Implementation for stopping load test will be added in later phases
             }
-            CommandType::CommandTypeShutdown => {
+            CommandType::Shutdown => {
                 info!("Received SHUTDOWN command");
-                state.write().await.state = super::gaggle_proto::WorkerState::WorkerStateIdle;
+                state.write().await.state = super::gaggle_proto::WorkerState::Idle;
                 // Implementation for shutdown will be added in later phases
             }
-            CommandType::CommandTypeUpdateUsers => {
+            CommandType::UpdateUsers => {
                 if let Some(user_count) = command.user_count {
                     info!("Received UPDATE_USERS command: {}", user_count);
                     state.write().await.active_users = user_count;
                     // Implementation for user count update will be added in later phases
                 }
             }
-            CommandType::CommandTypeHeartbeat => {
+            CommandType::Heartbeat => {
                 debug!("Received heartbeat from manager");
                 state.write().await.last_heartbeat = Some(Instant::now());
             }
