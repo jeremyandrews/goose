@@ -14,9 +14,8 @@ fn main() {
 fn compile_protos() {
     println!("cargo:rerun-if-changed=proto/gaggle.proto");
 
-    // Simple approach: use prost-build to generate messages only
-    // We'll define the service traits manually in the code
-    // Use tonic-build to generate gRPC services and prost messages
-    tonic_build::compile_protos("proto/gaggle.proto")
+    // Use tonic_prost_build - the correct API for tonic 0.14
+    tonic_prost_build::configure()
+        .compile_protos(&["proto/gaggle.proto"], &["proto"])
         .unwrap_or_else(|e| panic!("Failed to compile protos: {}", e));
 }

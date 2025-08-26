@@ -32,8 +32,8 @@ mod gaggle_proto {
     include!(concat!(env!("OUT_DIR"), "/gaggle.rs"));
 }
 
-// Generated gRPC service definitions will be included from build output
-// No need for manual service definitions since tonic-build handles this
+// Generated gRPC service definitions are now included from the build output
+// The tonic-prost-build system generates the necessary server and client modules
 
 // Provide helpful error messages when gaggle features are used without the feature flag
 #[cfg(not(feature = "gaggle"))]
