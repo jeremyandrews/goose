@@ -29,8 +29,11 @@ pub use gaggle_proto::*;
 
 #[cfg(feature = "gaggle")]
 mod gaggle_proto {
-    tonic::include_proto!("gaggle");
+    include!(concat!(env!("OUT_DIR"), "/gaggle.rs"));
 }
+
+// Generated gRPC service definitions will be included from build output
+// No need for manual service definitions since tonic-build handles this
 
 // Provide helpful error messages when gaggle features are used without the feature flag
 #[cfg(not(feature = "gaggle"))]

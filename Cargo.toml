@@ -13,13 +13,16 @@ license = "Apache-2.0"
 
 [dependencies]
 async-trait = "0.1"
+bytes = "1.10.1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ctrlc = "3"
 downcast-rs = "2.0"
 flume = "0.11"
 futures = "0.3"
+futures-core = "0.3.31"
 gumdrop = "0.8"
 http = "1.1"
+http-body-util = "0.1.3"
 itertools = "0.14"
 lazy_static = "1.4"
 log = "0.4"
@@ -48,7 +51,9 @@ tokio = { version = "1", features = [
     "time",
     "sync",
 ] }
+tokio-stream = { version = "0.1", optional = true }
 tokio-tungstenite = "0.27"
+tonic = { version = "0.14", optional = true }
 tungstenite = "0.27"
 url = "2"
 uuid = { version = "1.3", features = ["v4"], optional = true }
@@ -62,6 +67,14 @@ default = ["reqwest/default-tls", "cookies"]
 rustls-tls = ["reqwest/rustls-tls", "tokio-tungstenite/rustls", "cookies"]
 # Cookie support - can be completely disabled by compiling with --no-default-features for maximum performance
 cookies = ["reqwest/cookies"]
+# Gaggle distributed load testing feature
+gaggle = ["tonic", "prost", "tokio-stream", "uuid", "tonic-build", "prost-build", "prost-types"]
+
+[build-dependencies]
+rustc_version = "0.4"
+prost-build = { version = "0.14", optional = true }
+prost-types = { version = "0.14", optional = true }
+tonic-build = { version = "0.14", optional = true }
 
 [dev-dependencies]
 httpmock = "0.7"

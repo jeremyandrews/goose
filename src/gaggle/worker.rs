@@ -7,10 +7,10 @@ use crate::gaggle::gaggle_service_client::GaggleServiceClient;
 use log::{debug, error, info, warn};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant};
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
-use tonic::{Request, Streaming};
+use tonic::Request;
 
 /// Gaggle Worker for executing distributed load tests
 pub struct GaggleWorker {
