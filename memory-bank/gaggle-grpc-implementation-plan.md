@@ -119,8 +119,16 @@ Workers (gRPC Clients)
   tonic-build = { version = "0.12", optional = true }
   
   [features]
-  gaggle = ["tonic", "prost", "tokio-stream", "tonic-build"]
+  default = ["reqwest/default-tls"]
+  rustls-tls = ["reqwest/rustls-tls", "tokio-tungstenite/rustls"]
+  gaggle = ["tonic", "prost", "tokio-stream"]
   ```
+
+  **Feature Flag Strategy:**
+  - `gaggle` feature is **NOT** included in `default` features
+  - Users must explicitly opt-in: `cargo build --features gaggle`
+  - Keeps core Goose lightweight for single-machine testing
+  - Reduces dependency chain and build time for basic use cases
 
 - [ ] **Build Script** (`build.rs`)
   - Protocol buffer compilation
@@ -138,14 +146,40 @@ Workers (gRPC Clients)
 ```
 src/gaggle/
 ├── mod.rs              // Public API and feature gates
-├── manager.rs          // Manager service implementation
+├── manager.rs          // Manager service implementation  
 ├── worker.rs           // Worker client implementation
 ├── protocol.rs         // gRPC protocol handling
-├── config.rs           // Gaggle configuration
+├── config.rs           // Gaggle configuration helpers
 ├── metrics.rs          // Metrics aggregation
 ├── error.rs            // Comprehensive error types
 ├── health.rs           // Health monitoring
 └── auth.rs             // Security and authentication
+```
+
+#### Feature Flag Implementation Strategy
+```rust
+// src/gaggle/mod.rs - Feature gating example
+#[cfg(feature = "gaggle")]
+pub mod manager;
+#[cfg(feature = "gaggle")]
+pub mod worker;
+#[cfg(feature = "gaggle")]
+pub mod protocol;
+
+#[cfg(feature = "gaggle")]
+pub use manager::GaggleManager;
+#[cfg(feature = "gaggle")]
+pub use worker::GaggleWorker;
+
+// Conditional compilation for gaggle functionality
+#[cfg(not(feature = "gaggle"))]
+pub fn gaggle_not_enabled() -> GooseError {
+    GooseError::InvalidOption {
+        option: "gaggle".to_string(),
+        value: "disabled".to_string(), 
+        detail: "Gaggle support requires compilation with --features gaggle".to_string(),
+    }
+}
 ```
 
 #### Deliverables:
@@ -180,16 +214,45 @@ src/gaggle/
 #### Deliverables:
 - [ ] **GooseConfiguration Extensions** (`src/config.rs`)
   ```rust
-  // New configuration options
+  // Feature-gated gaggle configuration options
+  #[cfg(feature = "gaggle")]
+  #[derive(Options, Debug, Clone, Default, Serialize, Deserialize)]
   pub struct GaggleConfiguration {
+      /// Run as distributed load test Manager
+      #[options(no_short)]
+      pub manager: bool,
+      /// Manager bind host (default: 0.0.0.0)
+      #[options(no_short, meta = "HOST")]
       pub manager_bind_host: String,
+      /// Manager bind port (default: 5555)  
+      #[options(no_short, meta = "PORT")]
       pub manager_bind_port: u16,
+      /// Run as distributed load test Worker
+      #[options(no_short)]
+      pub worker: bool,
+      /// Manager host to connect to
+      #[options(no_short, meta = "HOST")]
       pub manager_host: String,
+      /// Manager port to connect to (default: 5555)
+      #[options(no_short, meta = "PORT")]
       pub manager_port: u16,
+      /// Number of Workers expected to connect
+      #[options(no_short, meta = "COUNT")]
       pub expect_workers: u32,
+      /// Optional Worker identifier
+      #[options(no_short, meta = "ID")]
       pub worker_id: Option<String>,
   }
+
+  // Add gaggle fields to main GooseConfiguration
+  #[cfg(feature = "gaggle")]
+  pub gaggle: GaggleConfiguration,
   ```
+
+  **Configuration Integration:**
+  - All gaggle options are feature-gated with `#[cfg(feature = "gaggle")]`
+  - CLI help only shows gaggle options when feature is enabled
+  - Seamless integration with existing configuration patterns
 
 - [ ] **CLI Integration**
   - `--manager` / `--worker` mode flags
@@ -365,20 +428,89 @@ src/gaggle/
 - Restore distributed load testing capability for Goose users
 - Enable users to upgrade from 0.16.4 to modern Goose versions
 - Eliminate cmake build dependency issues
+- **Optional complexity** - users choose when to include gRPC dependencies
 
 ### Long-term Benefits  
 - Industry-standard gRPC foundation enables future distributed features
 - Improved maintainability through proven technology stack
 - Enhanced performance and reliability over nng implementation
 - Foundation for advanced features (auto-scaling, cloud integration)
+- **Lightweight core** - maintains Goose's fast, minimal philosophy for single-machine testing
+
+### Feature Flag Benefits
+- **Reduced binary size**: ~2-3MB smaller binaries when gaggle feature not used
+- **Faster builds**: No protobuf compilation for basic use cases
+- **Cleaner dependencies**: Only ~12-15 additional crates when feature enabled
+- **User choice**: Explicit opt-in to distributed testing complexity
+- **Backwards compatibility**: Existing users completely unaffected
+
+## Feature Flag Implementation Guidelines
+
+### Build Configuration
+```toml
+# Basic Goose usage (most users)
+cargo build
+
+# Distributed testing usage  
+cargo build --features gaggle
+```
+
+### Code Organization Patterns
+```rust
+// Conditional module inclusion
+#[cfg(feature = "gaggle")]
+pub mod gaggle;
+
+// Conditional struct fields
+pub struct GooseConfiguration {
+    // ... existing fields ...
+    
+    #[cfg(feature = "gaggle")]
+    /// Gaggle-specific configuration options
+    pub gaggle: GaggleConfiguration,
+}
+
+// Conditional CLI options
+impl Options for GooseConfiguration {
+    fn usage() -> String {
+        let mut usage = String::from("Basic options...");
+        
+        #[cfg(feature = "gaggle")]
+        {
+            usage.push_str("\n\nDistributed Testing (Gaggle):");
+            usage.push_str("\n  --manager          Run as gaggle manager");
+            usage.push_str("\n  --worker           Run as gaggle worker");
+            // ... other gaggle options
+        }
+        
+        usage
+    }
+}
+```
+
+### Error Handling Strategy
+- Provide clear error messages when gaggle features used without feature flag
+- Guide users to recompile with `--features gaggle`
+- Graceful degradation for optional gaggle functionality
+
+### Testing Strategy
+- Test matrix: both `cargo test` and `cargo test --features gaggle`
+- Ensure core functionality works identically with/without gaggle feature
+- Integration tests for gaggle-specific functionality only run with feature enabled
+
+### Documentation Updates
+- README.md: Add feature flag usage instructions
+- Goose Book: Document when gaggle feature is required
+- CLI help: Contextual help based on enabled features
 
 ## Next Steps
 
 1. **Create Implementation Branch**: `feature/gaggle-grpc-implementation`
-2. **Set up Development Environment**: Protocol buffer tooling, gRPC testing
-3. **Begin Phase 1**: Start with protocol definition and basic service stubs
-4. **Establish CI/CD Pipeline**: Automated testing for new gaggle components
-5. **Performance Benchmarking Framework**: Baseline measurements for comparison
+2. **Update Cargo.toml**: Add optional dependencies and gaggle feature
+3. **Set up Development Environment**: Protocol buffer tooling, gRPC testing
+4. **Begin Phase 1**: Start with protocol definition and feature-gated service stubs
+5. **Establish CI/CD Pipeline**: Test both feature combinations in CI
+6. **Performance Benchmarking Framework**: Baseline measurements for comparison
 
 ---
 

@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package gaggle;
+
+// The Gaggle service provides coordination between Manager and Workers
+service GaggleService {
+    // Register a new worker with the manager
+    rpc RegisterWorker(WorkerInfo) returns (RegisterResponse);
+    
+    // Establish bidirectional streaming for real-time coordination
+    rpc CoordinationStream(stream WorkerUpdate) returns (stream ManagerCommand);
+    
+    // Submit metrics from worker to manager
+    rpc SubmitMetrics(stream MetricsBatch) returns (MetricsResponse);
+}
+
+// Worker information for registration
+message WorkerInfo {
+    string worker_id = 1;
+    string hostname = 2;
+    string ip_address = 3;
+    uint32 max_users = 4;
+    repeated string capabilities = 5;
+}
+
+// Response to worker registration
+message RegisterResponse {
+    bool success = 1;
+    string message = 2;
+    string assigned_id = 3;
+}
+
+// Updates sent from worker to manager
+message WorkerUpdate {
+    string worker_id = 1;
+    WorkerState state = 2;
+    uint32 active_users = 3;
+    optional string error_message = 4;
+    uint64 timestamp = 5;
+}
+
+// Worker states
+enum WorkerState {
+    WORKER_STATE_UNSPECIFIED = 0;
+    WORKER_STATE_IDLE = 1;
+    WORKER_STATE_READY = 2;
+    WORKER_STATE_RUNNING = 3;
+    WORKER_STATE_STOPPING = 4;
+    WORKER_STATE_ERROR = 5;
+}
+
+// Commands sent from manager to worker
+message ManagerCommand {
+    CommandType command_type = 1;
+    optional TestConfiguration test_config = 2;
+    optional uint32 user_count = 3;
+    optional string message = 4;
+}
+
+// Manager command types
+enum CommandType {
+    COMMAND_TYPE_UNSPECIFIED = 0;
+    COMMAND_TYPE_START = 1;
+    COMMAND_TYPE_STOP = 2;
+    COMMAND_TYPE_SHUTDOWN = 3;
+    COMMAND_TYPE_UPDATE_USERS = 4;
+    COMMAND_TYPE_HEARTBEAT = 5;
+}
+
+// Test configuration to send to workers
+message TestConfiguration {
+    string test_plan = 1;
+    uint32 duration_seconds = 2;
+    double requests_per_second = 3;
+    repeated string scenarios = 4;
+    map<string, string> config_options = 5;
+}
+
+// Metrics data batch from worker
+message MetricsBatch {
+    string worker_id = 1;
+    repeated RequestMetric request_metrics = 2;
+    repeated TransactionMetric transaction_metrics = 3;
+    repeated ScenarioMetric scenario_metrics = 4;
+    uint64 batch_timestamp = 5;
+}
+
+// Individual request metric
+message RequestMetric {
+    string name = 1;
+    string method = 2;
+    string url = 3;
+    uint32 status_code = 4;
+    uint64 response_time_ms = 5;
+    uint64 timestamp = 6;
+    bool success = 7;
+    optional string error = 8;
+}
+
+// Transaction metric
+message TransactionMetric {
+    string name = 1;
+    uint64 response_time_ms = 2;
+    uint64 timestamp = 3;
+    bool success = 4;
+    optional string error = 5;
+}
+
+// Scenario metric
+message ScenarioMetric {
+    string name = 1;
+    uint32 users_count = 2;
+    uint64 iterations = 3;
+    uint64 timestamp = 4;
+}
+
+// Response to metrics submission
+message MetricsResponse {
+    bool success = 1;
+    string message = 2;
+    uint64 processed_count = 3;
+}

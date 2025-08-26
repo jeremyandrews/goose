@@ -42,6 +42,8 @@ extern crate log;
 pub mod client;
 pub mod config;
 pub mod controller;
+#[cfg(feature = "gaggle")]
+pub mod gaggle;
 pub mod goose;
 mod graph;
 pub mod logger;

@@ -24,6 +24,7 @@ itertools = "0.14"
 lazy_static = "1.4"
 log = "0.4"
 num-format = "0.4"
+prost = { version = "0.14", optional = true }
 rand = "0.9"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -37,6 +38,7 @@ serde_json = "1.0"
 simplelog = "0.12"
 strum = "0.27"
 strum_macros = "0.27"
+thiserror = "2.0"
 tokio = { version = "1", features = [
     "fs",
     "io-util",
@@ -49,6 +51,7 @@ tokio = { version = "1", features = [
 tokio-tungstenite = "0.27"
 tungstenite = "0.27"
 url = "2"
+uuid = { version = "1.3", features = ["v4"], optional = true }
 
 [features]
 # Include cookies by default for backward compatibility and expected behavior in web load testing
