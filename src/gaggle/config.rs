@@ -1,6 +1,5 @@
 //! Gaggle configuration types and utilities
 
-use crate::config::GooseConfiguration;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 

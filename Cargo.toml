@@ -69,14 +69,17 @@ rustls-tls = ["reqwest/rustls-tls", "tokio-tungstenite/rustls", "cookies"]
 # Cookie support - can be completely disabled by compiling with --no-default-features for maximum performance
 cookies = ["reqwest/cookies"]
 # Gaggle distributed load testing feature
-gaggle = ["tonic", "prost", "tokio-stream", "uuid", "tonic-prost-build", "prost-types", "tonic-prost"]
+gaggle = ["tonic", "prost", "tokio-stream", "uuid", "tonic-prost", "tonic-prost-build"]
 
 [build-dependencies]
 rustc_version = "0.4"
 prost-build = { version = "0.14", optional = true }
 prost-types = { version = "0.14", optional = true }
 tonic-build = { version = "0.14", optional = true }
-tonic-prost-build = { version = "0.14", optional = true }
+
+[build-dependencies.tonic-prost-build]
+version = "0.14"
+optional = true
 
 [dev-dependencies]
 httpmock = "0.7"
