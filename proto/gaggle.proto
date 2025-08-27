@@ -67,13 +67,160 @@ enum CommandType {
     COMMAND_TYPE_HEARTBEAT = 5;
 }
 
-// Test configuration to send to workers
+// Enhanced test configuration for complete GooseAttack distribution
 message TestConfiguration {
+    // Test execution parameters
     string test_plan = 1;
     uint32 duration_seconds = 2;
     double requests_per_second = 3;
-    repeated string scenarios = 4;
-    map<string, string> config_options = 5;
+    
+    // Complete scenario definitions
+    repeated ScenarioConfig scenarios = 4;
+    
+    // Comprehensive Goose configuration
+    GooseConfiguration config = 5;
+    
+    // Worker assignment details
+    uint32 assigned_users = 6;
+    uint64 test_hash = 7;
+    
+    // Test coordination metadata
+    string manager_version = 8;
+    uint64 test_start_time = 9;
+}
+
+// Complete scenario definition for distribution
+message ScenarioConfig {
+    string name = 1;
+    string machine_name = 2;
+    uint32 weight = 3;
+    optional string host = 4;
+    
+    // Wait time configuration (min_wait, max_wait in milliseconds)
+    optional TransactionWaitConfig transaction_wait = 5;
+    
+    // All transactions in this scenario
+    repeated TransactionConfig transactions = 6;
+}
+
+// Transaction wait time configuration
+message TransactionWaitConfig {
+    uint64 min_wait_ms = 1;
+    uint64 max_wait_ms = 2;
+}
+
+// Transaction definition for distribution
+message TransactionConfig {
+    string name = 1;
+    TransactionNameType name_type = 2;
+    uint32 weight = 3;
+    uint32 sequence = 4;
+    bool on_start = 5;
+    bool on_stop = 6;
+    
+    // Transaction function identification (name-based lookup)
+    string function_name = 7;
+}
+
+// Transaction naming strategy
+enum TransactionNameType {
+    TRANSACTION_NAME_TYPE_UNSPECIFIED = 0;
+    TRANSACTION_NAME_TYPE_TRANSACTION_ONLY = 1;
+    TRANSACTION_NAME_TYPE_INHERIT_BY_REQUESTS = 2;
+}
+
+// Comprehensive Goose configuration for workers
+message GooseConfiguration {
+    // Basic execution parameters
+    string host = 1;
+    optional uint32 users = 2;
+    optional string hatch_rate = 3;
+    string startup_time = 4;
+    string run_time = 5;
+    
+    // Logging configuration
+    string goose_log = 6;
+    uint32 log_level = 7;
+    uint32 quiet = 8;
+    uint32 verbose = 9;
+    
+    // Metrics configuration
+    optional uint32 running_metrics = 10;
+    bool no_reset_metrics = 11;
+    bool no_metrics = 12;
+    bool no_transaction_metrics = 13;
+    bool no_scenario_metrics = 14;
+    bool no_print_metrics = 15;
+    bool no_error_summary = 16;
+    bool no_status_codes = 17;
+    
+    // Reporting configuration
+    repeated string report_file = 18;
+    bool no_granular_report = 19;
+    
+    // Request/response logging
+    string request_log = 20;
+    LogFormat request_format = 21;
+    bool request_body = 22;
+    string transaction_log = 23;
+    LogFormat transaction_format = 24;
+    string scenario_log = 25;
+    LogFormat scenario_format = 26;
+    string error_log = 27;
+    LogFormat error_format = 28;
+    string debug_log = 29;
+    LogFormat debug_format = 30;
+    bool no_debug_body = 31;
+    
+    // Advanced configuration
+    optional TestPlanConfig test_plan = 32;
+    uint32 iterations = 33;
+    repeated string active_scenarios = 34;
+    
+    // Controller configuration
+    bool no_telnet = 35;
+    string telnet_host = 36;
+    uint32 telnet_port = 37;
+    bool no_websocket = 38;
+    string websocket_host = 39;
+    uint32 websocket_port = 40;
+    bool no_autostart = 41;
+    
+    // HTTP client configuration
+    bool no_gzip = 42;
+    optional string timeout = 43;
+    CoordinatedOmissionMitigation co_mitigation = 44;
+    uint32 throttle_requests = 45;
+    bool sticky_follow = 46;
+    bool accept_invalid_certs = 47;
+}
+
+// Test plan configuration
+message TestPlanConfig {
+    repeated TestPlanStep steps = 1;
+}
+
+message TestPlanStep {
+    uint32 users = 1;
+    uint32 duration_seconds = 2;
+}
+
+// Log format options
+enum LogFormat {
+    LOG_FORMAT_UNSPECIFIED = 0;
+    LOG_FORMAT_CSV = 1;
+    LOG_FORMAT_JSON = 2;
+    LOG_FORMAT_RAW = 3;
+    LOG_FORMAT_PRETTY = 4;
+}
+
+// Coordinated omission mitigation strategies
+enum CoordinatedOmissionMitigation {
+    COORDINATED_OMISSION_MITIGATION_UNSPECIFIED = 0;
+    COORDINATED_OMISSION_MITIGATION_DISABLED = 1;
+    COORDINATED_OMISSION_MITIGATION_AVERAGE = 2;
+    COORDINATED_OMISSION_MITIGATION_MAXIMUM = 3;
+    COORDINATED_OMISSION_MITIGATION_MINIMUM = 4;
 }
 
 // Metrics data batch from worker

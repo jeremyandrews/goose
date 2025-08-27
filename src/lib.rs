@@ -941,7 +941,7 @@ impl GooseAttack {
 
     /// Execute Goose in gaggle manager mode.
     #[cfg(feature = "gaggle")]
-    async fn execute_gaggle_manager(self) -> Result<GooseMetrics, GooseError> {
+    async fn execute_gaggle_manager(mut self) -> Result<GooseMetrics, GooseError> {
         use crate::gaggle::{config::GaggleConfiguration, manager::GaggleManager};
 
         info!("Starting Goose in gaggle manager mode");
@@ -962,27 +962,64 @@ impl GooseAttack {
             });
         }
 
-        // Create and start the gaggle manager
-        let manager = GaggleManager::new(gaggle_config);
-
-        // Start the manager gRPC server
-        if let Err(e) = manager.start().await {
-            return Err(GooseError::InvalidOption {
-                option: "--manager".to_string(),
-                value: "true".to_string(),
-                detail: format!("Failed to start gaggle manager: {}", e),
-            });
+        // Initialize the same attack preparation as standalone
+        if self.configuration.no_autostart && self.validate_host().is_err() {
+            info!("host must be configured via Controller before starting load test");
+        } else {
+            if !self.configuration.host.is_empty() {
+                info!("global host configured: {}", self.configuration.host);
+            }
+            self.prepare_load_test()?;
         }
 
-        // For now, return empty metrics as the manager doesn't generate its own load test metrics
-        // In a complete implementation, the manager would coordinate the test and aggregate worker metrics
-        info!("Gaggle manager started successfully");
-        Ok(GooseMetrics::default())
+        // Create and start the gaggle manager in a background task
+        let manager = GaggleManager::new(gaggle_config);
+
+        // Start the gRPC server in the background, don't await it
+        let manager_handle = tokio::spawn(async move {
+            if let Err(e) = manager.start().await {
+                error!("Failed to start gaggle manager: {}", e);
+            }
+        });
+
+        // Give the manager a moment to start up
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // CRITICAL: Run the same load test execution logic as standalone
+        // but coordinate across workers instead of local users
+        let _goose_attack_run_state = self.initialize_attack().await?;
+
+        // Calculate a unique hash for the current load test
+        let mut s = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        self.scenarios.hash(&mut s);
+        self.metrics.hash = s.finish();
+        debug!("hash: {}", self.metrics.hash);
+
+        // Start the actual attack coordination
+        self = self.start_attack().await?;
+
+        // Display metrics if enabled
+        if self.metrics.display_metrics {
+            info!(
+                "printing final metrics after {} seconds...",
+                self.metrics.duration
+            );
+            print!("{}", self.metrics);
+
+            // Write reports
+            self.write_reports().await?;
+        }
+
+        // Clean up the manager task
+        manager_handle.abort();
+
+        Ok(self.metrics)
     }
 
     /// Execute Goose in gaggle worker mode.
     #[cfg(feature = "gaggle")]
-    async fn execute_gaggle_worker(self) -> Result<GooseMetrics, GooseError> {
+    async fn execute_gaggle_worker(mut self) -> Result<GooseMetrics, GooseError> {
         use crate::gaggle::{config::GaggleConfiguration, worker::GaggleWorker};
 
         info!("Starting Goose in gaggle worker mode");
@@ -1007,22 +1044,43 @@ impl GooseAttack {
             });
         }
 
-        // Create and start the gaggle worker
-        let worker = GaggleWorker::new(gaggle_config);
+        // Initialize worker-specific load test preparation
+        if self.configuration.no_autostart && self.validate_host().is_err() {
+            info!("host must be configured via Controller before starting load test");
+        } else {
+            if !self.configuration.host.is_empty() {
+                info!("global host configured: {}", self.configuration.host);
+            }
+            self.prepare_load_test()?;
+        }
 
-        // Connect to manager and start worker operations
-        if let Err(e) = worker.start().await {
-            return Err(GooseError::InvalidOption {
+        // CRITICAL: Create gaggle worker WITH GooseAttack integration
+        let worker = GaggleWorker::with_goose_attack(gaggle_config, self);
+
+        // Connect to manager and wait for test configuration
+        worker
+            .start()
+            .await
+            .map_err(|e| GooseError::InvalidOption {
                 option: "--worker".to_string(),
                 value: "true".to_string(),
                 detail: format!("Failed to start gaggle worker: {}", e),
-            });
-        }
+            })?;
 
-        // For now, return empty metrics as the worker sends metrics to the manager
-        // In a complete implementation, the worker would execute its portion of the load test
-        info!("Gaggle worker started successfully and connected to manager");
-        Ok(GooseMetrics::default())
+        info!("Gaggle Worker connected successfully and waiting for manager instructions");
+
+        // In a real implementation, the worker would wait for commands from the manager
+        // and execute them. For now, we simulate a simple completion with empty metrics
+        // to avoid the recursive async function issue.
+
+        // TODO: Implement proper command handling loop that waits for manager commands
+        // and executes local portions of the load test without recursion
+
+        info!("Gaggle worker is ready and waiting for manager commands");
+
+        // Return empty metrics for now - in production this would be populated
+        // with actual metrics from load test execution
+        Ok(crate::GooseMetrics::default())
     }
 
     /// Execute the [`GooseAttack`](./struct.GooseAttack.html) load test.
