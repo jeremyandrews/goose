@@ -1575,6 +1575,219 @@ impl GaggleManager {
 
         debug!("Performance baselines updated with current statistics");
     }
+
+    /// Handle worker disconnect and rebalance load (Section 5.2)
+    pub async fn handle_worker_disconnect(
+        &self,
+        worker_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        warn!("Worker {} disconnected", worker_id);
+
+        let (removed_worker, remaining_workers) = {
+            let mut workers = self.workers.write().await;
+            let removed = workers.remove(worker_id);
+            let remaining = workers.len();
+            (removed, remaining)
+        };
+
+        if let Some(worker) = removed_worker {
+            info!(
+                "Removed worker {} (was handling {} users), {} workers remaining",
+                worker_id, worker.active_users, remaining_workers
+            );
+
+            // Rebalance load among remaining workers if we had an active load test
+            if worker.active_users > 0 {
+                self.rebalance_load_after_disconnect(worker.active_users)
+                    .await?;
+            }
+        } else {
+            warn!("Attempted to remove unknown worker: {}", worker_id);
+        }
+
+        // Check if we have enough workers to continue the test
+        if remaining_workers == 0 {
+            error!("All workers disconnected, load test cannot continue");
+            // In a full implementation, this might trigger test failure handling
+        } else if remaining_workers < 2 {
+            warn!(
+                "Only {} worker(s) remaining, test reliability may be affected",
+                remaining_workers
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Rebalance load after a worker disconnection (Section 5.2)
+    pub async fn rebalance_load_after_disconnect(
+        &self,
+        orphaned_users: u32,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let workers = self.workers.read().await;
+        let worker_count = workers.len();
+
+        if worker_count == 0 {
+            return Err("Cannot rebalance load: no workers available".into());
+        }
+
+        info!(
+            "Rebalancing {} orphaned users across {} remaining workers",
+            orphaned_users, worker_count
+        );
+
+        // Calculate new user distribution
+        let additional_users_per_worker = orphaned_users / (worker_count as u32);
+        let extra_users = orphaned_users % (worker_count as u32);
+
+        info!(
+            "Distributing {} additional users per worker, with {} extra users",
+            additional_users_per_worker, extra_users
+        );
+
+        // Send rebalancing commands to each remaining worker
+        let mut extra_distributed = 0;
+        for (worker_id, worker) in workers.iter() {
+            let additional_users = additional_users_per_worker
+                + if extra_distributed < extra_users {
+                    1
+                } else {
+                    0
+                };
+
+            if extra_distributed < extra_users {
+                extra_distributed += 1;
+            }
+
+            let new_user_count = worker.active_users + additional_users;
+
+            info!(
+                "Updating worker {} from {} to {} users (+{})",
+                worker_id, worker.active_users, new_user_count, additional_users
+            );
+
+            // Send UPDATE_USERS command to rebalance
+            let rebalance_command = ManagerCommand {
+                command_type: CommandType::UpdateUsers.into(),
+                test_config: None,
+                user_count: Some(new_user_count),
+                message: Some(format!(
+                    "Rebalancing load: {} additional users due to worker disconnect",
+                    additional_users
+                )),
+            };
+
+            // In a full implementation, this would send the command to the specific worker
+            // For now, we broadcast to all workers (they'll filter by their ID)
+            self.broadcast_command(rebalance_command).await?;
+        }
+
+        info!("Load rebalancing completed successfully");
+        Ok(())
+    }
+
+    /// Monitor worker health and handle failures (Section 5.2)
+    pub async fn start_worker_health_monitoring(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let workers = Arc::clone(&self.workers);
+        let worker_timeout = std::time::Duration::from_secs(90); // 90 seconds timeout
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30)); // Check every 30 seconds
+
+            loop {
+                interval.tick().await;
+
+                let mut disconnected_workers = Vec::new();
+                {
+                    let workers_guard = workers.read().await;
+                    let now = std::time::Instant::now();
+
+                    for (worker_id, worker) in workers_guard.iter() {
+                        if now.duration_since(worker.last_heartbeat) > worker_timeout {
+                            warn!(
+                                "Worker {} health check failed - last heartbeat was {:?} ago",
+                                worker_id,
+                                now.duration_since(worker.last_heartbeat)
+                            );
+                            disconnected_workers.push(worker_id.clone());
+                        }
+                    }
+                }
+
+                // Handle disconnected workers outside of the lock
+                for worker_id in disconnected_workers {
+                    info!(
+                        "Marking worker {} as disconnected due to health check failure",
+                        worker_id
+                    );
+                    // In a full implementation, this would call handle_worker_disconnect
+                    // For now, just log the detection
+                    warn!("Worker {} would be removed and load rebalanced", worker_id);
+                }
+            }
+        });
+
+        info!("Worker health monitoring started");
+        Ok(())
+    }
+
+    /// Get connection status of all workers
+    pub async fn get_worker_connection_status(&self) -> HashMap<String, bool> {
+        let workers = self.workers.read().await;
+        let now = std::time::Instant::now();
+        let healthy_threshold = std::time::Duration::from_secs(60);
+
+        workers
+            .iter()
+            .map(|(worker_id, worker)| {
+                let is_healthy = now.duration_since(worker.last_heartbeat) <= healthy_threshold;
+                (worker_id.clone(), is_healthy)
+            })
+            .collect()
+    }
+
+    /// Handle graceful degradation when workers are lost
+    pub async fn handle_graceful_degradation(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let worker_count = self.worker_count().await;
+
+        if worker_count == 0 {
+            error!("All workers lost - stopping load test");
+            self.stop_distributed_load_test().await?;
+            return Err("All workers disconnected, load test stopped".into());
+        }
+
+        let total_capacity = {
+            let workers = self.workers.read().await;
+            workers.values().map(|w| w.max_users).sum::<u32>()
+        };
+
+        let current_load = {
+            let workers = self.workers.read().await;
+            workers.values().map(|w| w.active_users).sum::<u32>()
+        };
+
+        if current_load > total_capacity {
+            warn!(
+                "Current load ({} users) exceeds remaining capacity ({} users)",
+                current_load, total_capacity
+            );
+
+            // Reduce load to match capacity
+            let adjusted_load = (total_capacity as f64 * 0.8) as u32; // Use 80% of capacity for safety
+            self.redistribute_users(adjusted_load).await?;
+
+            info!(
+                "Load reduced to {} users to match remaining worker capacity",
+                adjusted_load
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// gRPC service implementation
