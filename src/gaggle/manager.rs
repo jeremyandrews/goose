@@ -1902,10 +1902,12 @@ impl GaggleManager {
     // ============================================================================
 
     /// Generate comprehensive health report for external monitoring systems (Section 6.1)
-    pub async fn generate_health_report(&self) -> Result<HealthReport, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn generate_health_report(
+        &self,
+    ) -> Result<HealthReport, Box<dyn std::error::Error + Send + Sync>> {
         let workers = self.workers.read().await;
         let now = std::time::Instant::now();
-        
+
         let mut worker_health_statuses = HashMap::new();
         let mut connection_summary_data = ConnectionSummaryData::default();
         let mut alerts = Vec::new();
@@ -1913,7 +1915,7 @@ impl GaggleManager {
         // Process each worker's health status
         for (worker_id, worker) in workers.iter() {
             let health_status = self.calculate_worker_health_status(worker, now).await;
-            
+
             // Update connection summary
             connection_summary_data.total_workers += 1;
             match health_status.connection_status {
@@ -1947,18 +1949,23 @@ impl GaggleManager {
             unstable_connections: connection_summary_data.unstable_connections,
             disconnected_workers: connection_summary_data.disconnected_workers,
             average_latency_ms: if connection_summary_data.active_connections > 0 {
-                connection_summary_data.total_latency / connection_summary_data.active_connections as f64
+                connection_summary_data.total_latency
+                    / connection_summary_data.active_connections as f64
             } else {
                 0.0
             },
-            stability_score: self.calculate_overall_stability_score(&connection_summary_data).await,
+            stability_score: self
+                .calculate_overall_stability_score(&connection_summary_data)
+                .await,
         };
 
         // Generate performance summary
         let performance_summary = self.calculate_performance_summary().await?;
-        
+
         // Determine overall system health
-        let overall_health = self.determine_overall_system_health(&connection_summary, &performance_summary, &alerts).await;
+        let overall_health = self
+            .determine_overall_system_health(&connection_summary, &performance_summary, &alerts)
+            .await;
 
         Ok(HealthReport {
             timestamp: now,
@@ -1971,27 +1978,37 @@ impl GaggleManager {
     }
 
     /// Get detailed connection quality metrics for a specific worker (Section 6.1)
-    pub async fn get_worker_connection_quality(&self, worker_id: &str) -> Option<ConnectionQualityMetrics> {
+    pub async fn get_worker_connection_quality(
+        &self,
+        worker_id: &str,
+    ) -> Option<ConnectionQualityMetrics> {
         let workers = self.workers.read().await;
-        workers.get(worker_id).map(|worker| worker.connection_metrics.clone())
+        workers
+            .get(worker_id)
+            .map(|worker| worker.connection_metrics.clone())
     }
 
     /// Update connection latency for a worker (Section 6.1)
-    pub async fn update_worker_latency(&self, worker_id: &str, latency_ms: f64, successful: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn update_worker_latency(
+        &self,
+        worker_id: &str,
+        latency_ms: f64,
+        successful: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut workers = self.workers.write().await;
-        
+
         if let Some(worker) = workers.get_mut(worker_id) {
             let now = std::time::Instant::now();
-            
+
             // Update latency samples
             let sample = LatencySample {
                 timestamp: now,
                 latency_ms,
                 successful,
             };
-            
+
             worker.connection_metrics.latency_samples.push_back(sample);
-            
+
             // Keep only last 100 samples
             while worker.connection_metrics.latency_samples.len() > 100 {
                 worker.connection_metrics.latency_samples.pop_front();
@@ -2000,11 +2017,13 @@ impl GaggleManager {
             // Update aggregate latency metrics
             if successful {
                 worker.connection_metrics.heartbeats_received += 1;
-                
-                if worker.connection_metrics.min_latency_ms == 0.0 || latency_ms < worker.connection_metrics.min_latency_ms {
+
+                if worker.connection_metrics.min_latency_ms == 0.0
+                    || latency_ms < worker.connection_metrics.min_latency_ms
+                {
                     worker.connection_metrics.min_latency_ms = latency_ms;
                 }
-                
+
                 if latency_ms > worker.connection_metrics.max_latency_ms {
                     worker.connection_metrics.max_latency_ms = latency_ms;
                 }
@@ -2014,30 +2033,37 @@ impl GaggleManager {
                 if worker.connection_metrics.average_latency_ms == 0.0 {
                     worker.connection_metrics.average_latency_ms = latency_ms;
                 } else {
-                    worker.connection_metrics.average_latency_ms = 
-                        worker.connection_metrics.average_latency_ms * (1.0 - alpha) + latency_ms * alpha;
+                    worker.connection_metrics.average_latency_ms =
+                        worker.connection_metrics.average_latency_ms * (1.0 - alpha)
+                            + latency_ms * alpha;
                 }
             }
-            
+
             worker.connection_metrics.heartbeats_sent += 1;
-            
+
             // Update packet loss percentage
             let total_heartbeats = worker.connection_metrics.heartbeats_sent;
             let successful_heartbeats = worker.connection_metrics.heartbeats_received;
-            
+
             if total_heartbeats > 0 {
-                worker.connection_metrics.packet_loss_percent = 
-                    ((total_heartbeats - successful_heartbeats) as f64 / total_heartbeats as f64) * 100.0;
+                worker.connection_metrics.packet_loss_percent =
+                    ((total_heartbeats - successful_heartbeats) as f64 / total_heartbeats as f64)
+                        * 100.0;
             }
 
             // Update connection health status based on latency
             if latency_ms > 1000.0 {
                 worker.connection_health.status = ConnectionStatus::Degraded;
-            } else if latency_ms > 500.0 && worker.connection_health.status == ConnectionStatus::Healthy {
+            } else if latency_ms > 500.0
+                && worker.connection_health.status == ConnectionStatus::Healthy
+            {
                 worker.connection_health.status = ConnectionStatus::Degraded;
             }
 
-            debug!("Updated latency for worker {}: {:.2}ms (success: {})", worker_id, latency_ms, successful);
+            debug!(
+                "Updated latency for worker {}: {:.2}ms (success: {})",
+                worker_id, latency_ms, successful
+            );
         } else {
             return Err(format!("Worker {} not found", worker_id).into());
         }
@@ -2046,26 +2072,39 @@ impl GaggleManager {
     }
 
     /// Configure health check intervals for all workers (Section 6.1)
-    pub async fn configure_health_check_intervals(&self, health_check_interval: u64, connection_timeout: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn configure_health_check_intervals(
+        &self,
+        health_check_interval: u64,
+        connection_timeout: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut workers = self.workers.write().await;
-        
+
         for (worker_id, worker) in workers.iter_mut() {
             worker.connection_health.health_check_interval = health_check_interval;
             worker.connection_health.connection_timeout = connection_timeout;
-            info!("Updated health check configuration for worker {}: interval={}s, timeout={}s", 
-                  worker_id, health_check_interval, connection_timeout);
+            info!(
+                "Updated health check configuration for worker {}: interval={}s, timeout={}s",
+                worker_id, health_check_interval, connection_timeout
+            );
         }
 
-        info!("Health check intervals configured: interval={}s, timeout={}s for {} workers", 
-              health_check_interval, connection_timeout, workers.len());
+        info!(
+            "Health check intervals configured: interval={}s, timeout={}s for {} workers",
+            health_check_interval,
+            connection_timeout,
+            workers.len()
+        );
         Ok(())
     }
 
-    /// Get system health dashboard data (Section 6.1) 
-    pub async fn get_health_dashboard_data(&self) -> Result<HealthDashboardData, Box<dyn std::error::Error + Send + Sync>> {
+    /// Get system health dashboard data (Section 6.1 & 6.2)
+    pub async fn get_health_dashboard_data(
+        &self,
+    ) -> Result<HealthDashboardData, Box<dyn std::error::Error + Send + Sync>> {
         let health_report = self.generate_health_report().await?;
         let analytics = self.analytics.read().await;
-        
+        let heartbeat_summary = self.get_heartbeat_summary().await?;
+
         Ok(HealthDashboardData {
             timestamp: health_report.timestamp,
             overall_health: health_report.overall_health,
@@ -2080,39 +2119,62 @@ impl GaggleManager {
             active_users: health_report.performance_summary.total_active_users,
             recent_alerts: health_report.alerts.len() as u32,
             health_score: analytics.trends.health_score,
+            heartbeat_summary,
         })
+    }
+
+    /// Initialize the gaggle manager with heartbeat monitoring (Section 6.2)
+    pub async fn initialize(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Initializing GaggleManager with advanced features");
+
+        // Initialize performance baselines
+        self.initialize_performance_baselines().await;
+
+        // Start worker health monitoring
+        self.start_worker_health_monitoring().await?;
+
+        // Start heartbeat monitoring system (Section 6.2)
+        self.start_heartbeat_monitoring().await;
+
+        info!("GaggleManager initialized with heartbeat monitoring and health systems");
+        Ok(())
     }
 
     // Helper methods for health monitoring
 
-    async fn calculate_worker_health_status(&self, worker: &WorkerState, now: std::time::Instant) -> WorkerHealthStatus {
+    async fn calculate_worker_health_status(
+        &self,
+        worker: &WorkerState,
+        now: std::time::Instant,
+    ) -> WorkerHealthStatus {
         let seconds_since_heartbeat = now.duration_since(worker.last_heartbeat).as_secs();
-        
+
         // Determine connection status based on heartbeat timing
-        let connection_status = if seconds_since_heartbeat > worker.connection_health.connection_timeout {
-            ConnectionStatus::Disconnected
-        } else if seconds_since_heartbeat > worker.connection_health.connection_timeout / 2 {
-            ConnectionStatus::Degraded
-        } else {
-            worker.connection_health.status.clone()
-        };
+        let connection_status =
+            if seconds_since_heartbeat > worker.connection_health.connection_timeout {
+                ConnectionStatus::Disconnected
+            } else if seconds_since_heartbeat > worker.connection_health.connection_timeout / 2 {
+                ConnectionStatus::Degraded
+            } else {
+                worker.connection_health.status.clone()
+            };
 
         // Calculate quality score based on multiple factors
         let mut quality_score = 1.0;
-        
+
         // Penalize based on packet loss
         quality_score -= worker.connection_metrics.packet_loss_percent / 100.0;
-        
+
         // Penalize based on high latency
         if worker.connection_metrics.average_latency_ms > 100.0 {
             quality_score -= (worker.connection_metrics.average_latency_ms - 100.0) / 1000.0;
         }
-        
+
         // Penalize based on connection drops
         if worker.connection_metrics.connection_drops > 0 {
             quality_score -= worker.connection_metrics.connection_drops as f64 * 0.1;
         }
-        
+
         quality_score = quality_score.max(0.0).min(1.0);
 
         WorkerHealthStatus {
@@ -2123,7 +2185,7 @@ impl GaggleManager {
             seconds_since_heartbeat,
             active_users: worker.active_users,
             performance_metrics: WorkerPerformanceMetrics {
-                requests_per_second: 0.0, // Would be calculated from recent metrics
+                requests_per_second: 0.0,  // Would be calculated from recent metrics
                 avg_response_time_ms: 0.0, // Would be calculated from recent metrics
                 error_rate_percent: 0.0,   // Would be calculated from recent metrics
                 cpu_usage_percent: None,
@@ -2132,36 +2194,53 @@ impl GaggleManager {
         }
     }
 
-    async fn generate_worker_alert(&self, health_status: &WorkerHealthStatus) -> Option<HealthAlert> {
+    async fn generate_worker_alert(
+        &self,
+        health_status: &WorkerHealthStatus,
+    ) -> Option<HealthAlert> {
         let mut metadata = HashMap::new();
         metadata.insert("worker_id".to_string(), health_status.worker_id.clone());
-        metadata.insert("quality_score".to_string(), format!("{:.2}", health_status.quality_score));
-        metadata.insert("latency_ms".to_string(), format!("{:.1}", health_status.current_latency_ms));
-        
+        metadata.insert(
+            "quality_score".to_string(),
+            format!("{:.2}", health_status.quality_score),
+        );
+        metadata.insert(
+            "latency_ms".to_string(),
+            format!("{:.1}", health_status.current_latency_ms),
+        );
+
         match health_status.connection_status {
             ConnectionStatus::Disconnected => Some(HealthAlert {
                 severity: AlertSeverity::Critical,
                 alert_type: AlertType::WorkerDisconnect,
-                message: format!("Worker {} disconnected - last heartbeat {}s ago", 
-                               health_status.worker_id, health_status.seconds_since_heartbeat),
+                message: format!(
+                    "Worker {} disconnected - last heartbeat {}s ago",
+                    health_status.worker_id, health_status.seconds_since_heartbeat
+                ),
                 worker_id: Some(health_status.worker_id.clone()),
                 timestamp: std::time::Instant::now(),
                 metadata,
             }),
-            ConnectionStatus::Degraded if health_status.current_latency_ms > 500.0 => Some(HealthAlert {
-                severity: AlertSeverity::Warning,
-                alert_type: AlertType::HighLatency,
-                message: format!("Worker {} experiencing high latency: {:.1}ms", 
-                               health_status.worker_id, health_status.current_latency_ms),
-                worker_id: Some(health_status.worker_id.clone()),
-                timestamp: std::time::Instant::now(),
-                metadata,
-            }),
+            ConnectionStatus::Degraded if health_status.current_latency_ms > 500.0 => {
+                Some(HealthAlert {
+                    severity: AlertSeverity::Warning,
+                    alert_type: AlertType::HighLatency,
+                    message: format!(
+                        "Worker {} experiencing high latency: {:.1}ms",
+                        health_status.worker_id, health_status.current_latency_ms
+                    ),
+                    worker_id: Some(health_status.worker_id.clone()),
+                    timestamp: std::time::Instant::now(),
+                    metadata,
+                })
+            }
             ConnectionStatus::Unstable => Some(HealthAlert {
                 severity: AlertSeverity::Warning,
                 alert_type: AlertType::ConnectionIssue,
-                message: format!("Worker {} connection unstable - quality score: {:.2}", 
-                               health_status.worker_id, health_status.quality_score),
+                message: format!(
+                    "Worker {} connection unstable - quality score: {:.2}",
+                    health_status.worker_id, health_status.quality_score
+                ),
                 worker_id: Some(health_status.worker_id.clone()),
                 timestamp: std::time::Instant::now(),
                 metadata,
@@ -2170,21 +2249,33 @@ impl GaggleManager {
         }
     }
 
-    async fn calculate_overall_stability_score(&self, connection_data: &ConnectionSummaryData) -> f64 {
+    async fn calculate_overall_stability_score(
+        &self,
+        connection_data: &ConnectionSummaryData,
+    ) -> f64 {
         if connection_data.total_workers == 0 {
             return 1.0;
         }
-        
-        let healthy_ratio = connection_data.healthy_connections as f64 / connection_data.total_workers as f64;
-        let degraded_penalty = connection_data.degraded_connections as f64 / connection_data.total_workers as f64 * 0.3;
-        let disconnected_penalty = connection_data.disconnected_workers as f64 / connection_data.total_workers as f64 * 0.8;
-        
-        (healthy_ratio - degraded_penalty - disconnected_penalty).max(0.0).min(1.0)
+
+        let healthy_ratio =
+            connection_data.healthy_connections as f64 / connection_data.total_workers as f64;
+        let degraded_penalty = connection_data.degraded_connections as f64
+            / connection_data.total_workers as f64
+            * 0.3;
+        let disconnected_penalty = connection_data.disconnected_workers as f64
+            / connection_data.total_workers as f64
+            * 0.8;
+
+        (healthy_ratio - degraded_penalty - disconnected_penalty)
+            .max(0.0)
+            .min(1.0)
     }
 
-    async fn calculate_performance_summary(&self) -> Result<PerformanceSummary, Box<dyn std::error::Error + Send + Sync>> {
+    async fn calculate_performance_summary(
+        &self,
+    ) -> Result<PerformanceSummary, Box<dyn std::error::Error + Send + Sync>> {
         let stats = self.get_realtime_statistics().await?;
-        
+
         Ok(PerformanceSummary {
             total_rps: stats.requests_per_second,
             avg_response_time_ms: stats.average_response_time_ms,
@@ -2198,19 +2289,273 @@ impl GaggleManager {
         })
     }
 
-    async fn determine_overall_system_health(&self, connection_summary: &ConnectionSummary, performance_summary: &PerformanceSummary, alerts: &[HealthAlert]) -> SystemHealthStatus {
-        let critical_alerts = alerts.iter().filter(|a| a.severity == AlertSeverity::Critical).count();
-        let error_alerts = alerts.iter().filter(|a| a.severity == AlertSeverity::Error).count();
-        
-        if critical_alerts > 0 || connection_summary.disconnected_workers > connection_summary.total_workers / 2 {
+    async fn determine_overall_system_health(
+        &self,
+        connection_summary: &ConnectionSummary,
+        performance_summary: &PerformanceSummary,
+        alerts: &[HealthAlert],
+    ) -> SystemHealthStatus {
+        let critical_alerts = alerts
+            .iter()
+            .filter(|a| a.severity == AlertSeverity::Critical)
+            .count();
+        let error_alerts = alerts
+            .iter()
+            .filter(|a| a.severity == AlertSeverity::Error)
+            .count();
+
+        if critical_alerts > 0
+            || connection_summary.disconnected_workers > connection_summary.total_workers / 2
+        {
             SystemHealthStatus::Critical
-        } else if error_alerts > 0 || connection_summary.degraded_connections > connection_summary.total_workers / 3 {
+        } else if error_alerts > 0
+            || connection_summary.degraded_connections > connection_summary.total_workers / 3
+        {
             SystemHealthStatus::Degraded
-        } else if performance_summary.error_rate_percent > 5.0 || connection_summary.average_latency_ms > 200.0 {
+        } else if performance_summary.error_rate_percent > 5.0
+            || connection_summary.average_latency_ms > 200.0
+        {
             SystemHealthStatus::Warning
         } else {
             SystemHealthStatus::Healthy
         }
+    }
+
+    // ============================================================================
+    // Section 6.2: Heartbeat Implementation Methods
+    // ============================================================================
+
+    /// Start heartbeat monitoring for all workers (Section 6.2)
+    pub async fn start_heartbeat_monitoring(&self) {
+        let workers = Arc::clone(&self.workers);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+
+            loop {
+                interval.tick().await;
+
+                let workers_guard = workers.read().await;
+                for (worker_id, _worker) in workers_guard.iter() {
+                    debug!("Heartbeat monitoring check for worker: {}", worker_id);
+                    // In a full implementation, this would send actual heartbeat requests
+                }
+            }
+        });
+
+        info!("Heartbeat monitoring system started");
+    }
+
+    /// Get heartbeat summary for all workers (Section 6.2)
+    pub async fn get_heartbeat_summary(
+        &self,
+    ) -> Result<HeartbeatSummary, Box<dyn std::error::Error + Send + Sync>> {
+        let workers = self.workers.read().await;
+        let now = std::time::Instant::now();
+
+        let mut total_workers = 0u32;
+        let mut responding_workers = 0u32;
+        let mut total_latency = 0.0f64;
+        let mut active_latency_count = 0u32;
+
+        for (_worker_id, worker) in workers.iter() {
+            total_workers += 1;
+
+            // Check if worker is responding (heartbeat within last 30 seconds)
+            if now.duration_since(worker.last_heartbeat).as_secs() <= 30 {
+                responding_workers += 1;
+            }
+
+            // Add to latency calculation
+            if worker.connection_metrics.average_latency_ms > 0.0 {
+                total_latency += worker.connection_metrics.average_latency_ms;
+                active_latency_count += 1;
+            }
+        }
+
+        let average_latency_ms = if active_latency_count > 0 {
+            total_latency / active_latency_count as f64
+        } else {
+            0.0
+        };
+
+        let health_score = if total_workers > 0 {
+            responding_workers as f64 / total_workers as f64
+        } else {
+            1.0
+        };
+
+        Ok(HeartbeatSummary {
+            total_workers,
+            responding_workers,
+            non_responding_workers: total_workers - responding_workers,
+            average_latency_ms,
+            health_score,
+            timestamp: now,
+        })
+    }
+
+    /// Configure heartbeat settings for a specific worker (Section 6.2)
+    pub async fn configure_heartbeat_settings(
+        &self,
+        worker_id: &str,
+        interval_ms: u64,
+        timeout_ms: u64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut workers = self.workers.write().await;
+
+        if let Some(worker) = workers.get_mut(worker_id) {
+            // Update heartbeat configuration via connection health settings
+            worker.connection_health.health_check_interval = interval_ms / 1000; // Convert to seconds
+            worker.connection_health.connection_timeout = timeout_ms / 1000; // Convert to seconds
+
+            info!(
+                "Updated heartbeat settings for worker {}: interval={}ms, timeout={}ms",
+                worker_id, interval_ms, timeout_ms
+            );
+        } else {
+            return Err(format!("Worker {} not found", worker_id).into());
+        }
+
+        Ok(())
+    }
+
+    /// Send heartbeat to all workers (Section 6.2)
+    pub async fn send_heartbeat_to_all_workers(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let workers = self.workers.read().await;
+
+        for (worker_id, _worker) in workers.iter() {
+            self.send_heartbeat_to_worker(worker_id).await?;
+        }
+
+        debug!("Heartbeat sent to {} workers", workers.len());
+        Ok(())
+    }
+
+    /// Send heartbeat to a specific worker (Section 6.2)
+    pub async fn send_heartbeat_to_worker(
+        &self,
+        worker_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let start_time = std::time::Instant::now();
+
+        // In a full implementation, this would send an actual heartbeat message via gRPC
+        // For now, we simulate the heartbeat and update metrics
+
+        // Simulate heartbeat response processing
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let latency_ms = start_time.elapsed().as_millis() as f64;
+
+        // Update worker latency metrics
+        self.update_worker_latency(worker_id, latency_ms, true)
+            .await?;
+
+        debug!(
+            "Heartbeat sent to worker {}: {:.2}ms",
+            worker_id, latency_ms
+        );
+        Ok(())
+    }
+
+    /// Check for heartbeat timeouts and update worker status (Section 6.2)
+    pub async fn check_heartbeat_timeouts(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut workers = self.workers.write().await;
+        let now = std::time::Instant::now();
+        let mut timed_out_workers = Vec::new();
+
+        for (worker_id, worker) in workers.iter_mut() {
+            let seconds_since_heartbeat = now.duration_since(worker.last_heartbeat).as_secs();
+            let timeout_threshold = worker.connection_health.connection_timeout;
+
+            if seconds_since_heartbeat > timeout_threshold {
+                // Worker has timed out
+                worker.connection_health.status = ConnectionStatus::Disconnected;
+                timed_out_workers.push(worker_id.clone());
+
+                warn!(
+                    "Worker {} heartbeat timeout: {}s > {}s threshold",
+                    worker_id, seconds_since_heartbeat, timeout_threshold
+                );
+            } else if seconds_since_heartbeat > timeout_threshold / 2 {
+                // Worker is degraded (over half timeout threshold)
+                if worker.connection_health.status == ConnectionStatus::Healthy {
+                    worker.connection_health.status = ConnectionStatus::Degraded;
+                    debug!(
+                        "Worker {} connection degraded due to slow heartbeat",
+                        worker_id
+                    );
+                }
+            }
+        }
+
+        Ok(timed_out_workers)
+    }
+
+    /// Handle heartbeat response from worker (Section 6.2)
+    pub async fn handle_heartbeat_response(
+        &self,
+        worker_id: &str,
+        response_time_ms: f64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut workers = self.workers.write().await;
+
+        if let Some(worker) = workers.get_mut(worker_id) {
+            let now = std::time::Instant::now();
+
+            // Update last heartbeat time
+            worker.last_heartbeat = now;
+            worker.connection_health.last_successful_heartbeat = now;
+
+            // Reset consecutive failures
+            // (consecutive_failures would be tracked in HeartbeatInfo if we add it to WorkerState)
+
+            // Update connection status based on response time
+            if response_time_ms < 100.0 {
+                worker.connection_health.status = ConnectionStatus::Healthy;
+            } else if response_time_ms < 500.0 {
+                worker.connection_health.status = ConnectionStatus::Degraded;
+            } else {
+                worker.connection_health.status = ConnectionStatus::Unstable;
+            }
+
+            // Update latency metrics
+            self.update_worker_latency(worker_id, response_time_ms, true)
+                .await?;
+
+            debug!(
+                "Processed heartbeat response from worker {}: {:.2}ms",
+                worker_id, response_time_ms
+            );
+        } else {
+            return Err(format!("Worker {} not found for heartbeat response", worker_id).into());
+        }
+
+        Ok(())
+    }
+
+    /// Get heartbeat status for a specific worker (Section 6.2)
+    pub async fn get_heartbeat_status(&self, worker_id: &str) -> Option<HeartbeatStatus> {
+        let workers = self.workers.read().await;
+        let now = std::time::Instant::now();
+
+        workers.get(worker_id).map(|worker| {
+            let seconds_since_heartbeat = now.duration_since(worker.last_heartbeat).as_secs();
+            let is_responding =
+                seconds_since_heartbeat <= worker.connection_health.connection_timeout;
+
+            HeartbeatStatus {
+                worker_id: worker.id.clone(),
+                is_responding,
+                last_heartbeat: worker.last_heartbeat,
+                consecutive_failures: 0, // Would be tracked in HeartbeatInfo
+                average_latency_ms: worker.connection_metrics.average_latency_ms,
+                health_status: worker.connection_health.status.clone(),
+            }
+        })
     }
 }
 
@@ -2226,6 +2571,59 @@ struct ConnectionSummaryData {
     failed_connections: u32,
     total_latency: f64,
     active_connections: u32,
+}
+
+/// Heartbeat information for connection monitoring (Section 6.2)
+#[derive(Debug, Clone)]
+pub struct HeartbeatInfo {
+    /// Heartbeat interval in milliseconds
+    pub interval_ms: u64,
+    /// Heartbeat timeout in milliseconds
+    pub timeout_ms: u64,
+    /// Number of consecutive heartbeat failures
+    pub consecutive_failures: u32,
+    /// Last heartbeat sent timestamp
+    pub last_sent: std::time::Instant,
+    /// Last heartbeat response received timestamp
+    pub last_received: Option<std::time::Instant>,
+    /// Current heartbeat latency in milliseconds
+    pub current_latency_ms: f64,
+    /// Average heartbeat latency in milliseconds
+    pub average_latency_ms: f64,
+}
+
+/// Heartbeat status for individual worker (Section 6.2)
+#[derive(Debug, Clone)]
+pub struct HeartbeatStatus {
+    /// Worker identifier
+    pub worker_id: String,
+    /// Current heartbeat status
+    pub is_responding: bool,
+    /// Last heartbeat timestamp
+    pub last_heartbeat: std::time::Instant,
+    /// Consecutive failures count
+    pub consecutive_failures: u32,
+    /// Average latency in milliseconds
+    pub average_latency_ms: f64,
+    /// Connection health based on heartbeats
+    pub health_status: ConnectionStatus,
+}
+
+/// System-wide heartbeat summary (Section 6.2)
+#[derive(Debug, Clone)]
+pub struct HeartbeatSummary {
+    /// Total number of workers being monitored
+    pub total_workers: u32,
+    /// Number of workers responding to heartbeats
+    pub responding_workers: u32,
+    /// Number of workers not responding to heartbeats
+    pub non_responding_workers: u32,
+    /// Average heartbeat latency across all workers
+    pub average_latency_ms: f64,
+    /// Overall heartbeat health score (0.0 - 1.0)
+    pub health_score: f64,
+    /// Timestamp of this summary
+    pub timestamp: std::time::Instant,
 }
 
 /// Health dashboard data for external monitoring systems (Section 6.1)
@@ -2244,6 +2642,7 @@ pub struct HealthDashboardData {
     pub active_users: u32,
     pub recent_alerts: u32,
     pub health_score: f64,
+    pub heartbeat_summary: HeartbeatSummary,
 }
 
 /// Additional health monitoring structures for comprehensive reporting (Section 6.1)
