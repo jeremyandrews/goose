@@ -41,13 +41,24 @@ async fn test_worker_configuration_application() {
     let gaggle_config = GaggleConfiguration::new().set_worker("127.0.0.1");
     let worker = GaggleWorker::new(gaggle_config);
 
-    // Create test configuration
+    // Create test configuration with updated protobuf structure
     let test_config = goose::gaggle::gaggle_proto::TestConfiguration {
+        test_plan: "{}".to_string(),
         duration_seconds: 60,
-        scenarios: vec!["test_scenario".to_string()],
-        test_plan: "".to_string(),
         requests_per_second: 100.0,
-        config_options: std::collections::HashMap::new(),
+        scenarios: vec![goose::gaggle::gaggle_proto::ScenarioConfig {
+            name: "test_scenario".to_string(),
+            machine_name: "test_scenario".to_string(),
+            weight: 1,
+            host: None,
+            transaction_wait: None,
+            transactions: vec![],
+        }],
+        config: None,
+        assigned_users: 1,
+        test_hash: 12345,
+        manager_version: "0.19.0-dev".to_string(),
+        test_start_time: chrono::Utc::now().timestamp_millis() as u64,
     };
 
     // Test configuration application

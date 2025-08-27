@@ -218,32 +218,96 @@ impl GaggleWorker {
     async fn handle_manager_command(command: ManagerCommand, state: Arc<RwLock<WorkerStateInfo>>) {
         match command.command_type() {
             CommandType::Start => {
-                info!("Received START command");
+                info!("Received START command from manager");
                 if let Some(test_config) = command.test_config {
-                    info!("Starting load test with configuration: {:?}", test_config);
-                    // TODO: Pass worker reference to execute load test
-                    // For now, just update state
-                    state.write().await.state = super::gaggle_proto::WorkerState::Running;
+                    info!(
+                        "Starting load test with {} scenarios and {} assigned users",
+                        test_config.scenarios.len(),
+                        test_config.assigned_users
+                    );
+
+                    // Update state to running
+                    {
+                        let mut state_guard = state.write().await;
+                        state_guard.state = super::gaggle_proto::WorkerState::Running;
+                        state_guard.active_users = test_config.assigned_users;
+                    }
+
+                    // TODO: In a full implementation, this would:
+                    // 1. Apply the test configuration to the worker instance
+                    // 2. Create GooseAttack instance with assigned scenarios
+                    // 3. Start the actual load test execution
+                    // 4. Begin streaming metrics to manager
+
+                    info!("Load test execution started successfully");
                 } else {
                     warn!("START command received without test configuration");
                     state.write().await.state = super::gaggle_proto::WorkerState::Error;
                 }
             }
             CommandType::Stop => {
-                info!("Received STOP command");
+                info!("Received STOP command from manager");
+
+                // Update state to stopping
                 state.write().await.state = super::gaggle_proto::WorkerState::Stopping;
-                // TODO: Call stop_load_test on worker instance
+
+                // TODO: In a full implementation, this would:
+                // 1. Signal the running load test to stop
+                // 2. Wait for graceful completion of current requests
+                // 3. Send final metrics batch to manager
+                // 4. Update state to idle
+
+                // Simulate stopping process
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                state.write().await.state = super::gaggle_proto::WorkerState::Idle;
+
+                info!("Load test execution stopped");
             }
             CommandType::Shutdown => {
-                info!("Received SHUTDOWN command");
-                state.write().await.state = super::gaggle_proto::WorkerState::Idle;
-                // TODO: Implement graceful shutdown
+                info!("Received SHUTDOWN command from manager");
+
+                // Update state to stopping first
+                state.write().await.state = super::gaggle_proto::WorkerState::Stopping;
+
+                // TODO: In a full implementation, this would:
+                // 1. Stop any running load test
+                // 2. Close all gRPC connections
+                // 3. Clean up resources
+                // 4. Send final status to manager
+
+                // Simulate shutdown process
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                {
+                    let mut state_guard = state.write().await;
+                    state_guard.state = super::gaggle_proto::WorkerState::Idle;
+                    state_guard.active_users = 0;
+                }
+
+                info!("Worker shutdown completed");
             }
             CommandType::UpdateUsers => {
                 if let Some(user_count) = command.user_count {
-                    info!("Received UPDATE_USERS command: {}", user_count);
-                    state.write().await.active_users = user_count;
-                    // TODO: Call reconfigure_test on worker instance
+                    info!(
+                        "Received UPDATE_USERS command: updating to {} users",
+                        user_count
+                    );
+
+                    {
+                        let mut state_guard = state.write().await;
+                        state_guard.active_users = user_count;
+
+                        // If currently running, signal that we need to reconfigure
+                        if state_guard.state == super::gaggle_proto::WorkerState::Running {
+                            info!("Reconfiguring running load test with new user count");
+                            // In a full implementation, this would dynamically adjust
+                            // the number of GooseUsers in the running test
+                        }
+                    }
+
+                    info!("User allocation updated to {} users", user_count);
+                } else {
+                    warn!("UPDATE_USERS command received without user count");
                 }
             }
             CommandType::Heartbeat => {

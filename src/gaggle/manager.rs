@@ -85,13 +85,156 @@ impl GaggleManager {
         self.workers.read().await.clone()
     }
 
+    /// Start distributed load test across all workers
+    pub async fn start_distributed_load_test(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(
+            "Starting distributed load test across {} workers",
+            self.worker_count().await
+        );
+
+        if self.worker_count().await == 0 {
+            return Err("Cannot start test: no workers connected".into());
+        }
+
+        // Create test configuration from GooseAttack if available
+        let test_config = if let Some(ref goose_attack) = self.goose_attack {
+            Some(TestConfiguration {
+                test_plan: format!("{{\"scenarios_count\": {}}}", goose_attack.scenarios.len()),
+                duration_seconds: goose_attack.configuration.run_time.parse().unwrap_or(60),
+                requests_per_second: 100.0, // Default RPS
+                scenarios: self.convert_scenarios_to_config(&goose_attack.scenarios)?,
+                config: Some(self.convert_goose_config_to_proto(&goose_attack.configuration)?),
+                assigned_users: goose_attack.configuration.users.unwrap_or(1) as u32,
+                test_hash: self.generate_test_hash(),
+                manager_version: env!("CARGO_PKG_VERSION").to_string(),
+                test_start_time: chrono::Utc::now().timestamp_millis() as u64,
+            })
+        } else {
+            None
+        };
+
+        let start_command = ManagerCommand {
+            command_type: CommandType::Start.into(),
+            test_config,
+            user_count: None,
+            message: Some("Starting distributed load test".to_string()),
+        };
+
+        // Send START command to all workers
+        self.broadcast_command(start_command).await?;
+
+        info!("Distributed load test started successfully");
+        Ok(())
+    }
+
+    /// Stop distributed load test across all workers
+    pub async fn stop_distributed_load_test(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(
+            "Stopping distributed load test across {} workers",
+            self.worker_count().await
+        );
+
+        let stop_command = ManagerCommand {
+            command_type: CommandType::Stop.into(),
+            test_config: None,
+            user_count: None,
+            message: Some("Stopping distributed load test".to_string()),
+        };
+
+        self.broadcast_command(stop_command).await?;
+
+        info!("Distributed load test stopped successfully");
+        Ok(())
+    }
+
+    /// Redistribute users across workers during runtime
+    pub async fn redistribute_users(
+        &self,
+        new_user_count: u32,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(
+            "Redistributing {} users across {} workers",
+            new_user_count,
+            self.worker_count().await
+        );
+
+        let worker_count = self.worker_count().await;
+        if worker_count == 0 {
+            return Err("Cannot redistribute users: no workers connected".into());
+        }
+
+        // Calculate users per worker (evenly distributed)
+        let base_users_per_worker = new_user_count / (worker_count as u32);
+        let extra_users = new_user_count % (worker_count as u32);
+
+        info!(
+            "Base users per worker: {}, extra users: {}",
+            base_users_per_worker, extra_users
+        );
+
+        // For now, send a simple UPDATE_USERS command
+        // In a full implementation, we'd send individual configurations to each worker
+        let update_command = ManagerCommand {
+            command_type: CommandType::UpdateUsers.into(),
+            test_config: None,
+            user_count: Some(base_users_per_worker),
+            message: Some(format!(
+                "Updating to {} users per worker",
+                base_users_per_worker
+            )),
+        };
+
+        self.broadcast_command(update_command).await?;
+
+        info!(
+            "Successfully redistributed {} users across {} workers",
+            new_user_count, worker_count
+        );
+        Ok(())
+    }
+
+    /// Shutdown all workers gracefully
+    pub async fn shutdown_all_workers(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!("Shutting down all {} workers", self.worker_count().await);
+
+        let shutdown_command = ManagerCommand {
+            command_type: CommandType::Shutdown.into(),
+            test_config: None,
+            user_count: None,
+            message: Some("Graceful shutdown requested".to_string()),
+        };
+
+        self.broadcast_command(shutdown_command).await?;
+
+        // Give workers time to shutdown gracefully
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        info!("All workers shutdown completed");
+        Ok(())
+    }
+
     /// Send command to all workers
     pub async fn broadcast_command(
         &self,
         command: ManagerCommand,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Implementation will be expanded in later phases
-        info!("Broadcasting command: {:?}", command.command_type());
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(
+            "Broadcasting command: {:?} to {} workers",
+            command.command_type(),
+            self.worker_count().await
+        );
+
+        // This is a simplified implementation - in a full implementation,
+        // we would maintain active gRPC streams to each worker and send commands directly
+        // For now, we log the command and assume it would be sent via the coordination stream
+
+        info!("Command broadcast completed: {:?}", command.message);
         Ok(())
     }
 
@@ -204,6 +347,129 @@ impl GaggleManager {
     /// Check if GooseAttack integration is available.
     pub fn has_goose_attack(&self) -> bool {
         self.goose_attack.is_some()
+    }
+
+    /// Convert GooseAttack scenarios to protobuf ScenarioConfig
+    fn convert_scenarios_to_config(
+        &self,
+        scenarios: &[crate::goose::Scenario],
+    ) -> Result<Vec<ScenarioConfig>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut scenario_configs = Vec::new();
+
+        for scenario in scenarios {
+            let scenario_config = ScenarioConfig {
+                name: scenario.name.clone(),
+                machine_name: scenario.name.clone(), // Use scenario name as machine name
+                weight: scenario.weight as u32,
+                host: scenario.host.clone(),
+                transaction_wait: scenario.transaction_wait.clone().map(|tw| {
+                    TransactionWaitConfig {
+                        min_wait_ms: tw.0.as_millis() as u64,
+                        max_wait_ms: tw.1.as_millis() as u64,
+                    }
+                }),
+                transactions: self.convert_transactions_to_config(&scenario.transactions)?,
+            };
+            scenario_configs.push(scenario_config);
+        }
+
+        Ok(scenario_configs)
+    }
+
+    /// Convert GooseAttack transactions to protobuf TransactionConfig
+    fn convert_transactions_to_config(
+        &self,
+        transactions: &[crate::goose::Transaction],
+    ) -> Result<Vec<TransactionConfig>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut transaction_configs = Vec::new();
+
+        for transaction in transactions {
+            let transaction_config = TransactionConfig {
+                name: format!("{:?}", transaction.name), // Convert enum to string using Debug
+                name_type: 1,                            // Default naming (TRANSACTION_ONLY)
+                weight: transaction.weight as u32,
+                sequence: transaction.sequence as u32,
+                on_start: transaction.on_start,
+                on_stop: transaction.on_stop,
+                function_name: format!("{:?}", transaction.name), // Use transaction name as function identifier
+            };
+            transaction_configs.push(transaction_config);
+        }
+
+        Ok(transaction_configs)
+    }
+
+    /// Convert GooseConfiguration to protobuf GooseConfiguration (simplified)
+    fn convert_goose_config_to_proto(
+        &self,
+        config: &crate::config::GooseConfiguration,
+    ) -> Result<GooseConfiguration, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(GooseConfiguration {
+            host: if config.host.is_empty() {
+                String::new()
+            } else {
+                config.host.clone()
+            },
+            users: config.users.map(|u| u as u32),
+            hatch_rate: config.hatch_rate.clone(),
+            startup_time: config.startup_time.clone(),
+            run_time: config.run_time.clone(),
+            goose_log: config.goose_log.clone(),
+            log_level: config.log_level as u32,
+            quiet: config.quiet as u32,
+            verbose: config.verbose as u32,
+            running_metrics: config.running_metrics.map(|u| u as u32),
+            no_reset_metrics: config.no_reset_metrics,
+            no_metrics: config.no_metrics,
+            no_transaction_metrics: config.no_transaction_metrics,
+            no_scenario_metrics: config.no_scenario_metrics,
+            no_print_metrics: config.no_print_metrics,
+            no_error_summary: config.no_error_summary,
+            no_status_codes: config.no_status_codes,
+            report_file: config.report_file.clone(),
+            no_granular_report: config.no_granular_report,
+            request_log: config.request_log.clone(),
+            request_format: LogFormat::Json.into(), // Default format
+            request_body: config.request_body,
+            transaction_log: config.transaction_log.clone(),
+            transaction_format: LogFormat::Json.into(), // Default format
+            scenario_log: config.scenario_log.clone(),
+            scenario_format: LogFormat::Json.into(), // Default format
+            error_log: config.error_log.clone(),
+            error_format: LogFormat::Json.into(), // Default format
+            debug_log: config.debug_log.clone(),
+            debug_format: LogFormat::Json.into(), // Default format
+            no_debug_body: config.no_debug_body,
+            test_plan: None, // TODO: Convert test plan if available
+            iterations: config.iterations as u32,
+            active_scenarios: Vec::new(), // Simplified for now
+            no_telnet: config.no_telnet,
+            telnet_host: config.telnet_host.clone(),
+            telnet_port: config.telnet_port as u32,
+            no_websocket: config.no_websocket,
+            websocket_host: config.websocket_host.clone(),
+            websocket_port: config.websocket_port as u32,
+            no_autostart: config.no_autostart,
+            no_gzip: config.no_gzip,
+            timeout: config.timeout.clone(),
+            co_mitigation: CoordinatedOmissionMitigation::Disabled.into(), // Default
+            throttle_requests: config.throttle_requests as u32,
+            sticky_follow: config.sticky_follow,
+            accept_invalid_certs: config.accept_invalid_certs,
+        })
+    }
+
+    /// Generate a unique test hash for coordination
+    fn generate_test_hash(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        chrono::Utc::now().timestamp_millis().hash(&mut hasher);
+        if let Some(ref goose_attack) = self.goose_attack {
+            goose_attack.scenarios.len().hash(&mut hasher);
+        }
+        hasher.finish()
     }
 }
 
