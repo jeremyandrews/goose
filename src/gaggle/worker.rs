@@ -323,20 +323,27 @@ impl GaggleWorker {
         }
     }
 
-    /// Start the metrics submission task
+    /// Start the metrics submission task with configurable batching and timing
     async fn start_metrics_submission(
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let client = Arc::clone(&self.client);
         let metrics_buffer = Arc::clone(&self.metrics_buffer);
-        let _worker_id = self
+        let worker_id = self
             .config
             .worker_id
             .clone()
             .unwrap_or_else(|| format!("worker-{}", uuid::Uuid::new_v4()));
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5)); // Submit every 5 seconds
+            // Configurable metrics submission interval (default: 5 seconds)
+            let submission_interval = Duration::from_secs(5);
+            let mut interval = tokio::time::interval(submission_interval);
+
+            // Configurable batch size limits
+            let max_batch_size = 100; // Maximum batches to send in one submission
+            let mut failed_submissions = 0u32;
+            let max_retry_attempts = 3;
 
             loop {
                 interval.tick().await;
@@ -346,36 +353,80 @@ impl GaggleWorker {
                     continue;
                 }
 
-                let batches_to_send = buffer.drain(..).collect::<Vec<_>>();
+                // Limit batch size to prevent overwhelming the manager
+                let batch_count = std::cmp::min(buffer.len(), max_batch_size);
+                let batches_to_send: Vec<MetricsBatch> = buffer.drain(..batch_count).collect();
                 drop(buffer);
 
                 if !batches_to_send.is_empty() {
+                    debug!(
+                        "Attempting to submit {} metrics batches for worker {}",
+                        batches_to_send.len(),
+                        worker_id
+                    );
+
                     let mut client_guard = client.lock().await;
                     if let Some(client) = client_guard.as_mut() {
-                        let (tx, rx) = tokio::sync::mpsc::channel(32);
+                        let (tx, rx) =
+                            tokio::sync::mpsc::channel(std::cmp::max(32, batches_to_send.len()));
                         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
 
-                        // Send batches
-                        for batch in batches_to_send {
-                            if tx.send(batch).await.is_err() {
-                                error!("Failed to send metrics batch");
-                                break;
+                        // Send batches asynchronously
+                        let send_task = tokio::spawn(async move {
+                            for batch in batches_to_send {
+                                if tx.send(batch).await.is_err() {
+                                    error!("Failed to send metrics batch to stream");
+                                    break;
+                                }
                             }
-                        }
-                        drop(tx);
+                        });
 
                         match client.submit_metrics(Request::new(stream)).await {
                             Ok(response) => {
                                 let result = response.into_inner();
                                 debug!(
-                                    "Metrics submitted: {} batches processed",
+                                    "Metrics successfully submitted: {} batches processed by manager",
                                     result.processed_count
                                 );
+
+                                // Reset failed submission counter on success
+                                failed_submissions = 0;
+
+                                // Log success details for monitoring
+                                if result.processed_count > 0 {
+                                    debug!(
+                                        "Worker {} metrics streaming: {} batches processed, buffer backlog reduced",
+                                        worker_id, result.processed_count
+                                    );
+                                }
                             }
                             Err(e) => {
-                                error!("Failed to submit metrics: {}", e);
+                                failed_submissions += 1;
+                                error!(
+                                    "Failed to submit metrics (attempt {} of {}): {}",
+                                    failed_submissions, max_retry_attempts, e
+                                );
+
+                                // Implement exponential backoff for retries
+                                if failed_submissions <= max_retry_attempts {
+                                    let backoff_delay =
+                                        Duration::from_secs(2u64.pow(failed_submissions));
+                                    warn!(
+                                        "Retrying metrics submission in {:?} for worker {}",
+                                        backoff_delay, worker_id
+                                    );
+                                    tokio::time::sleep(backoff_delay).await;
+                                } else {
+                                    error!(
+                                        "Max retry attempts exceeded for metrics submission, will retry on next interval"
+                                    );
+                                    failed_submissions = 0; // Reset to try again next cycle
+                                }
                             }
                         }
+
+                        // Ensure send task completes
+                        let _ = send_task.await;
                     }
                 }
             }
@@ -693,11 +744,14 @@ impl GaggleWorker {
     }
 
     /// Stream metrics to manager during test execution
+    ///
+    /// This method handles real-time streaming of metrics during active load testing.
+    /// It converts GooseMetrics to protobuf format and queues them for batch transmission.
     pub async fn stream_metrics_to_manager(
         &self,
         metrics: crate::GooseMetrics,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Streaming metrics to manager");
+        debug!("Streaming metrics batch to manager");
 
         let worker_id = self
             .config
@@ -713,7 +767,67 @@ impl GaggleWorker {
         // Add to metrics buffer for transmission
         self.add_metrics(metrics_batch).await;
 
-        info!("Metrics queued for transmission to manager");
+        debug!("Metrics batch queued for transmission to manager");
+        Ok(())
+    }
+
+    /// Stream individual metric during test execution for real-time monitoring
+    ///
+    /// This method provides granular metric streaming for immediate feedback,
+    /// complementing the batch streaming approach.
+    pub async fn stream_individual_metric(
+        &self,
+        metric: crate::GooseMetric,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let worker_id = self
+            .config
+            .worker_id
+            .clone()
+            .unwrap_or_else(|| format!("worker-{}", uuid::Uuid::new_v4()));
+
+        let metrics_batch = match metric {
+            crate::GooseMetric::Request(request_metric) => {
+                let request_proto = self
+                    .convert_request_metric_to_proto(&request_metric)
+                    .await?;
+                MetricsBatch {
+                    worker_id: worker_id.clone(),
+                    request_metrics: vec![request_proto],
+                    transaction_metrics: Vec::new(),
+                    scenario_metrics: Vec::new(),
+                    batch_timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                }
+            }
+            crate::GooseMetric::Transaction(transaction_metric) => {
+                let transaction_proto = self
+                    .convert_transaction_metric_to_proto(&transaction_metric)
+                    .await?;
+                MetricsBatch {
+                    worker_id: worker_id.clone(),
+                    request_metrics: Vec::new(),
+                    transaction_metrics: vec![transaction_proto],
+                    scenario_metrics: Vec::new(),
+                    batch_timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                }
+            }
+            crate::GooseMetric::Scenario(scenario_metric) => {
+                let scenario_proto = self
+                    .convert_scenario_metric_to_proto(&scenario_metric)
+                    .await?;
+                MetricsBatch {
+                    worker_id: worker_id.clone(),
+                    request_metrics: Vec::new(),
+                    transaction_metrics: Vec::new(),
+                    scenario_metrics: vec![scenario_proto],
+                    batch_timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                }
+            }
+        };
+
+        // Add to metrics buffer for transmission
+        self.add_metrics(metrics_batch).await;
+
+        debug!("Individual metric streamed for worker {}", worker_id);
         Ok(())
     }
 
@@ -723,23 +837,147 @@ impl GaggleWorker {
         worker_id: &str,
         goose_metrics: crate::GooseMetrics,
     ) -> Result<MetricsBatch, Box<dyn std::error::Error + Send + Sync>> {
-        // Create a basic metrics batch - this would be expanded to include
-        // all relevant metrics in a production implementation
+        let mut request_metrics = Vec::new();
+        let mut transaction_metrics = Vec::new();
+        let mut scenario_metrics = Vec::new();
+
+        // Convert request metrics
+        for (request_key, request_aggregate) in goose_metrics.requests.iter() {
+            // Extract method and name from the key
+            let parts: Vec<&str> = request_key.splitn(2, ' ').collect();
+            let method = if parts.len() >= 1 { parts[0] } else { "GET" };
+            let name = if parts.len() >= 2 {
+                parts[1]
+            } else {
+                request_key
+            };
+
+            let request_metric = RequestMetric {
+                name: name.to_string(),
+                method: method.to_string(),
+                url: request_aggregate.path.clone(),
+                status_code: 200, // Default status code - would need more detailed conversion
+                response_time_ms: if request_aggregate.raw_data.counter > 0 {
+                    (request_aggregate.raw_data.total_time / request_aggregate.raw_data.counter)
+                        as u64
+                } else {
+                    0
+                },
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                success: request_aggregate.success_count > request_aggregate.fail_count,
+                error: if request_aggregate.fail_count > 0 {
+                    Some(format!("Failed requests: {}", request_aggregate.fail_count))
+                } else {
+                    None
+                },
+            };
+            request_metrics.push(request_metric);
+        }
+
+        // Convert transaction metrics
+        for scenario_transactions in goose_metrics.transactions.iter() {
+            for transaction_aggregate in scenario_transactions.iter() {
+                let transaction_metric = TransactionMetric {
+                    name: transaction_aggregate
+                        .transaction_name
+                        .name_for_transaction()
+                        .to_string(),
+                    response_time_ms: if transaction_aggregate.counter > 0 {
+                        (transaction_aggregate.total_time / transaction_aggregate.counter) as u64
+                    } else {
+                        0
+                    },
+                    timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    success: transaction_aggregate.success_count > transaction_aggregate.fail_count,
+                    error: if transaction_aggregate.fail_count > 0 {
+                        Some(format!(
+                            "Failed transactions: {}",
+                            transaction_aggregate.fail_count
+                        ))
+                    } else {
+                        None
+                    },
+                };
+                transaction_metrics.push(transaction_metric);
+            }
+        }
+
+        // Convert scenario metrics
+        for scenario_aggregate in goose_metrics.scenarios.iter() {
+            let scenario_metric = ScenarioMetric {
+                name: scenario_aggregate.name.clone(),
+                users_count: scenario_aggregate.users.len() as u32,
+                iterations: scenario_aggregate.counter as u64,
+                timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            };
+            scenario_metrics.push(scenario_metric);
+        }
+
         let batch = MetricsBatch {
             worker_id: worker_id.to_string(),
-            request_metrics: Vec::new(), // Would populate with converted request metrics
-            transaction_metrics: Vec::new(), // Would populate with converted transaction metrics
-            scenario_metrics: Vec::new(), // Would populate with converted scenario metrics
+            request_metrics,
+            transaction_metrics,
+            scenario_metrics,
             batch_timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
 
-        info!(
-            "Converted {} request metrics and {} scenario metrics to batch",
-            goose_metrics.requests.len(),
-            goose_metrics.scenarios.len()
+        debug!(
+            "Converted {} request metrics, {} transaction metrics, and {} scenario metrics to batch for worker {}",
+            batch.request_metrics.len(),
+            batch.transaction_metrics.len(),
+            batch.scenario_metrics.len(),
+            worker_id
         );
 
         Ok(batch)
+    }
+
+    /// Convert individual GooseRequestMetric to protobuf RequestMetric
+    async fn convert_request_metric_to_proto(
+        &self,
+        request_metric: &crate::metrics::GooseRequestMetric,
+    ) -> Result<RequestMetric, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(RequestMetric {
+            name: request_metric.name.clone(),
+            method: format!("{:?}", request_metric.raw.method),
+            url: request_metric.raw.url.clone(),
+            status_code: request_metric.status_code as u32,
+            response_time_ms: request_metric.response_time,
+            timestamp: request_metric.elapsed,
+            success: request_metric.success,
+            error: if request_metric.error.is_empty() {
+                None
+            } else {
+                Some(request_metric.error.clone())
+            },
+        })
+    }
+
+    /// Convert individual TransactionMetric to protobuf TransactionMetric
+    async fn convert_transaction_metric_to_proto(
+        &self,
+        transaction_metric: &crate::metrics::TransactionMetric,
+    ) -> Result<TransactionMetric, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(TransactionMetric {
+            name: transaction_metric.name.clone(),
+            response_time_ms: transaction_metric.run_time,
+            timestamp: transaction_metric.elapsed,
+            success: transaction_metric.success,
+            error: None, // TransactionMetric doesn't have error field in current GooseMetric
+        })
+    }
+
+    /// Convert individual ScenarioMetric to protobuf ScenarioMetric  
+    async fn convert_scenario_metric_to_proto(
+        &self,
+        scenario_metric: &crate::metrics::ScenarioMetric,
+    ) -> Result<ScenarioMetric, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(ScenarioMetric {
+            name: scenario_metric.name.clone(),
+            users_count: 1, // Individual scenario metric represents one user's execution
+            iterations: 1,  // Individual scenario metric represents one execution
+            timestamp: scenario_metric.elapsed,
+        })
     }
 
     /// Receive and apply configuration from manager
