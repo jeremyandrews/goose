@@ -42,6 +42,82 @@ pub struct WorkerState {
     pub state: super::gaggle_proto::WorkerState,
     pub active_users: u32,
     pub last_heartbeat: std::time::Instant,
+    /// Extended connection health information (Section 6.1)
+    pub connection_health: ConnectionHealthInfo,
+    /// Connection quality metrics (Section 6.1)
+    pub connection_metrics: ConnectionQualityMetrics,
+}
+
+/// Detailed connection health information for monitoring (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct ConnectionHealthInfo {
+    /// Current connection status
+    pub status: ConnectionStatus,
+    /// Connection established timestamp
+    pub connected_since: std::time::Instant,
+    /// Number of reconnection attempts
+    pub reconnection_attempts: u32,
+    /// Last successful heartbeat timestamp
+    pub last_successful_heartbeat: std::time::Instant,
+    /// Connection stability score (0.0 - 1.0)
+    pub stability_score: f64,
+    /// Health check interval in seconds
+    pub health_check_interval: u64,
+    /// Connection timeout threshold in seconds
+    pub connection_timeout: u64,
+}
+
+/// Connection status for detailed monitoring (Section 6.1)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectionStatus {
+    /// Connection is healthy and stable
+    Healthy,
+    /// Connection has minor issues but is functional
+    Degraded,
+    /// Connection is experiencing significant issues
+    Unstable,
+    /// Connection is lost or unresponsive
+    Disconnected,
+    /// Connection is in reconnection process
+    Reconnecting,
+    /// Connection has permanently failed
+    Failed,
+}
+
+/// Connection quality metrics for performance monitoring (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct ConnectionQualityMetrics {
+    /// Average heartbeat latency in milliseconds
+    pub average_latency_ms: f64,
+    /// Minimum observed latency in milliseconds
+    pub min_latency_ms: f64,
+    /// Maximum observed latency in milliseconds
+    pub max_latency_ms: f64,
+    /// Latency samples for trend analysis (keep last 100 samples)
+    pub latency_samples: std::collections::VecDeque<LatencySample>,
+    /// Packet loss percentage (0.0 - 100.0)
+    pub packet_loss_percent: f64,
+    /// Connection uptime percentage (0.0 - 100.0)
+    pub uptime_percent: f64,
+    /// Total number of heartbeats sent
+    pub heartbeats_sent: u64,
+    /// Total number of heartbeats received
+    pub heartbeats_received: u64,
+    /// Number of connection drops
+    pub connection_drops: u32,
+    /// Data throughput in bytes per second
+    pub throughput_bps: f64,
+}
+
+/// Individual latency measurement sample (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct LatencySample {
+    /// Timestamp of the measurement
+    pub timestamp: std::time::Instant,
+    /// Latency measurement in milliseconds
+    pub latency_ms: f64,
+    /// Whether the measurement was successful
+    pub successful: bool,
 }
 
 /// Aggregated statistics across all workers for real-time monitoring
@@ -292,6 +368,38 @@ impl Default for AggregatedStatistics {
             unique_errors: 0,
             error_rate: 0.0,
             last_updated: chrono::Utc::now().timestamp_millis() as u64,
+        }
+    }
+}
+
+impl Default for ConnectionHealthInfo {
+    fn default() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            status: ConnectionStatus::Healthy,
+            connected_since: now,
+            reconnection_attempts: 0,
+            last_successful_heartbeat: now,
+            stability_score: 1.0,
+            health_check_interval: 30,
+            connection_timeout: 60,
+        }
+    }
+}
+
+impl Default for ConnectionQualityMetrics {
+    fn default() -> Self {
+        Self {
+            average_latency_ms: 0.0,
+            min_latency_ms: 0.0,
+            max_latency_ms: 0.0,
+            latency_samples: std::collections::VecDeque::with_capacity(100),
+            packet_loss_percent: 0.0,
+            uptime_percent: 100.0,
+            heartbeats_sent: 0,
+            heartbeats_received: 0,
+            connection_drops: 0,
+            throughput_bps: 0.0,
         }
     }
 }
@@ -1788,6 +1896,499 @@ impl GaggleManager {
 
         Ok(())
     }
+
+    // ============================================================================
+    // Section 6.1: Connection Status Monitoring API Methods
+    // ============================================================================
+
+    /// Generate comprehensive health report for external monitoring systems (Section 6.1)
+    pub async fn generate_health_report(&self) -> Result<HealthReport, Box<dyn std::error::Error + Send + Sync>> {
+        let workers = self.workers.read().await;
+        let now = std::time::Instant::now();
+        
+        let mut worker_health_statuses = HashMap::new();
+        let mut connection_summary_data = ConnectionSummaryData::default();
+        let mut alerts = Vec::new();
+
+        // Process each worker's health status
+        for (worker_id, worker) in workers.iter() {
+            let health_status = self.calculate_worker_health_status(worker, now).await;
+            
+            // Update connection summary
+            connection_summary_data.total_workers += 1;
+            match health_status.connection_status {
+                ConnectionStatus::Healthy => connection_summary_data.healthy_connections += 1,
+                ConnectionStatus::Degraded => connection_summary_data.degraded_connections += 1,
+                ConnectionStatus::Unstable => connection_summary_data.unstable_connections += 1,
+                ConnectionStatus::Disconnected => connection_summary_data.disconnected_workers += 1,
+                ConnectionStatus::Reconnecting => connection_summary_data.reconnecting_workers += 1,
+                ConnectionStatus::Failed => connection_summary_data.failed_connections += 1,
+            }
+
+            // Add latency to average calculation
+            connection_summary_data.total_latency += health_status.current_latency_ms;
+            if health_status.current_latency_ms > 0.0 {
+                connection_summary_data.active_connections += 1;
+            }
+
+            // Generate alerts for problematic workers
+            if let Some(alert) = self.generate_worker_alert(&health_status).await {
+                alerts.push(alert);
+            }
+
+            worker_health_statuses.insert(worker_id.clone(), health_status);
+        }
+
+        // Calculate connection summary metrics
+        let connection_summary = ConnectionSummary {
+            total_workers: connection_summary_data.total_workers,
+            healthy_connections: connection_summary_data.healthy_connections,
+            degraded_connections: connection_summary_data.degraded_connections,
+            unstable_connections: connection_summary_data.unstable_connections,
+            disconnected_workers: connection_summary_data.disconnected_workers,
+            average_latency_ms: if connection_summary_data.active_connections > 0 {
+                connection_summary_data.total_latency / connection_summary_data.active_connections as f64
+            } else {
+                0.0
+            },
+            stability_score: self.calculate_overall_stability_score(&connection_summary_data).await,
+        };
+
+        // Generate performance summary
+        let performance_summary = self.calculate_performance_summary().await?;
+        
+        // Determine overall system health
+        let overall_health = self.determine_overall_system_health(&connection_summary, &performance_summary, &alerts).await;
+
+        Ok(HealthReport {
+            timestamp: now,
+            overall_health,
+            worker_health: worker_health_statuses,
+            connection_summary,
+            performance_summary,
+            alerts,
+        })
+    }
+
+    /// Get detailed connection quality metrics for a specific worker (Section 6.1)
+    pub async fn get_worker_connection_quality(&self, worker_id: &str) -> Option<ConnectionQualityMetrics> {
+        let workers = self.workers.read().await;
+        workers.get(worker_id).map(|worker| worker.connection_metrics.clone())
+    }
+
+    /// Update connection latency for a worker (Section 6.1)
+    pub async fn update_worker_latency(&self, worker_id: &str, latency_ms: f64, successful: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut workers = self.workers.write().await;
+        
+        if let Some(worker) = workers.get_mut(worker_id) {
+            let now = std::time::Instant::now();
+            
+            // Update latency samples
+            let sample = LatencySample {
+                timestamp: now,
+                latency_ms,
+                successful,
+            };
+            
+            worker.connection_metrics.latency_samples.push_back(sample);
+            
+            // Keep only last 100 samples
+            while worker.connection_metrics.latency_samples.len() > 100 {
+                worker.connection_metrics.latency_samples.pop_front();
+            }
+
+            // Update aggregate latency metrics
+            if successful {
+                worker.connection_metrics.heartbeats_received += 1;
+                
+                if worker.connection_metrics.min_latency_ms == 0.0 || latency_ms < worker.connection_metrics.min_latency_ms {
+                    worker.connection_metrics.min_latency_ms = latency_ms;
+                }
+                
+                if latency_ms > worker.connection_metrics.max_latency_ms {
+                    worker.connection_metrics.max_latency_ms = latency_ms;
+                }
+
+                // Update average latency (exponential moving average)
+                let alpha = 0.1; // Smoothing factor
+                if worker.connection_metrics.average_latency_ms == 0.0 {
+                    worker.connection_metrics.average_latency_ms = latency_ms;
+                } else {
+                    worker.connection_metrics.average_latency_ms = 
+                        worker.connection_metrics.average_latency_ms * (1.0 - alpha) + latency_ms * alpha;
+                }
+            }
+            
+            worker.connection_metrics.heartbeats_sent += 1;
+            
+            // Update packet loss percentage
+            let total_heartbeats = worker.connection_metrics.heartbeats_sent;
+            let successful_heartbeats = worker.connection_metrics.heartbeats_received;
+            
+            if total_heartbeats > 0 {
+                worker.connection_metrics.packet_loss_percent = 
+                    ((total_heartbeats - successful_heartbeats) as f64 / total_heartbeats as f64) * 100.0;
+            }
+
+            // Update connection health status based on latency
+            if latency_ms > 1000.0 {
+                worker.connection_health.status = ConnectionStatus::Degraded;
+            } else if latency_ms > 500.0 && worker.connection_health.status == ConnectionStatus::Healthy {
+                worker.connection_health.status = ConnectionStatus::Degraded;
+            }
+
+            debug!("Updated latency for worker {}: {:.2}ms (success: {})", worker_id, latency_ms, successful);
+        } else {
+            return Err(format!("Worker {} not found", worker_id).into());
+        }
+
+        Ok(())
+    }
+
+    /// Configure health check intervals for all workers (Section 6.1)
+    pub async fn configure_health_check_intervals(&self, health_check_interval: u64, connection_timeout: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut workers = self.workers.write().await;
+        
+        for (worker_id, worker) in workers.iter_mut() {
+            worker.connection_health.health_check_interval = health_check_interval;
+            worker.connection_health.connection_timeout = connection_timeout;
+            info!("Updated health check configuration for worker {}: interval={}s, timeout={}s", 
+                  worker_id, health_check_interval, connection_timeout);
+        }
+
+        info!("Health check intervals configured: interval={}s, timeout={}s for {} workers", 
+              health_check_interval, connection_timeout, workers.len());
+        Ok(())
+    }
+
+    /// Get system health dashboard data (Section 6.1) 
+    pub async fn get_health_dashboard_data(&self) -> Result<HealthDashboardData, Box<dyn std::error::Error + Send + Sync>> {
+        let health_report = self.generate_health_report().await?;
+        let analytics = self.analytics.read().await;
+        
+        Ok(HealthDashboardData {
+            timestamp: health_report.timestamp,
+            overall_health: health_report.overall_health,
+            total_workers: health_report.connection_summary.total_workers,
+            healthy_workers: health_report.connection_summary.healthy_connections,
+            degraded_workers: health_report.connection_summary.degraded_connections,
+            disconnected_workers: health_report.connection_summary.disconnected_workers,
+            average_latency: health_report.connection_summary.average_latency_ms,
+            stability_score: health_report.connection_summary.stability_score,
+            total_rps: health_report.performance_summary.total_rps,
+            error_rate: health_report.performance_summary.error_rate_percent,
+            active_users: health_report.performance_summary.total_active_users,
+            recent_alerts: health_report.alerts.len() as u32,
+            health_score: analytics.trends.health_score,
+        })
+    }
+
+    // Helper methods for health monitoring
+
+    async fn calculate_worker_health_status(&self, worker: &WorkerState, now: std::time::Instant) -> WorkerHealthStatus {
+        let seconds_since_heartbeat = now.duration_since(worker.last_heartbeat).as_secs();
+        
+        // Determine connection status based on heartbeat timing
+        let connection_status = if seconds_since_heartbeat > worker.connection_health.connection_timeout {
+            ConnectionStatus::Disconnected
+        } else if seconds_since_heartbeat > worker.connection_health.connection_timeout / 2 {
+            ConnectionStatus::Degraded
+        } else {
+            worker.connection_health.status.clone()
+        };
+
+        // Calculate quality score based on multiple factors
+        let mut quality_score = 1.0;
+        
+        // Penalize based on packet loss
+        quality_score -= worker.connection_metrics.packet_loss_percent / 100.0;
+        
+        // Penalize based on high latency
+        if worker.connection_metrics.average_latency_ms > 100.0 {
+            quality_score -= (worker.connection_metrics.average_latency_ms - 100.0) / 1000.0;
+        }
+        
+        // Penalize based on connection drops
+        if worker.connection_metrics.connection_drops > 0 {
+            quality_score -= worker.connection_metrics.connection_drops as f64 * 0.1;
+        }
+        
+        quality_score = quality_score.max(0.0).min(1.0);
+
+        WorkerHealthStatus {
+            worker_id: worker.id.clone(),
+            connection_status,
+            quality_score,
+            current_latency_ms: worker.connection_metrics.average_latency_ms,
+            seconds_since_heartbeat,
+            active_users: worker.active_users,
+            performance_metrics: WorkerPerformanceMetrics {
+                requests_per_second: 0.0, // Would be calculated from recent metrics
+                avg_response_time_ms: 0.0, // Would be calculated from recent metrics
+                error_rate_percent: 0.0,   // Would be calculated from recent metrics
+                cpu_usage_percent: None,
+                memory_usage_percent: None,
+            },
+        }
+    }
+
+    async fn generate_worker_alert(&self, health_status: &WorkerHealthStatus) -> Option<HealthAlert> {
+        let mut metadata = HashMap::new();
+        metadata.insert("worker_id".to_string(), health_status.worker_id.clone());
+        metadata.insert("quality_score".to_string(), format!("{:.2}", health_status.quality_score));
+        metadata.insert("latency_ms".to_string(), format!("{:.1}", health_status.current_latency_ms));
+        
+        match health_status.connection_status {
+            ConnectionStatus::Disconnected => Some(HealthAlert {
+                severity: AlertSeverity::Critical,
+                alert_type: AlertType::WorkerDisconnect,
+                message: format!("Worker {} disconnected - last heartbeat {}s ago", 
+                               health_status.worker_id, health_status.seconds_since_heartbeat),
+                worker_id: Some(health_status.worker_id.clone()),
+                timestamp: std::time::Instant::now(),
+                metadata,
+            }),
+            ConnectionStatus::Degraded if health_status.current_latency_ms > 500.0 => Some(HealthAlert {
+                severity: AlertSeverity::Warning,
+                alert_type: AlertType::HighLatency,
+                message: format!("Worker {} experiencing high latency: {:.1}ms", 
+                               health_status.worker_id, health_status.current_latency_ms),
+                worker_id: Some(health_status.worker_id.clone()),
+                timestamp: std::time::Instant::now(),
+                metadata,
+            }),
+            ConnectionStatus::Unstable => Some(HealthAlert {
+                severity: AlertSeverity::Warning,
+                alert_type: AlertType::ConnectionIssue,
+                message: format!("Worker {} connection unstable - quality score: {:.2}", 
+                               health_status.worker_id, health_status.quality_score),
+                worker_id: Some(health_status.worker_id.clone()),
+                timestamp: std::time::Instant::now(),
+                metadata,
+            }),
+            _ => None,
+        }
+    }
+
+    async fn calculate_overall_stability_score(&self, connection_data: &ConnectionSummaryData) -> f64 {
+        if connection_data.total_workers == 0 {
+            return 1.0;
+        }
+        
+        let healthy_ratio = connection_data.healthy_connections as f64 / connection_data.total_workers as f64;
+        let degraded_penalty = connection_data.degraded_connections as f64 / connection_data.total_workers as f64 * 0.3;
+        let disconnected_penalty = connection_data.disconnected_workers as f64 / connection_data.total_workers as f64 * 0.8;
+        
+        (healthy_ratio - degraded_penalty - disconnected_penalty).max(0.0).min(1.0)
+    }
+
+    async fn calculate_performance_summary(&self) -> Result<PerformanceSummary, Box<dyn std::error::Error + Send + Sync>> {
+        let stats = self.get_realtime_statistics().await?;
+        
+        Ok(PerformanceSummary {
+            total_rps: stats.requests_per_second,
+            avg_response_time_ms: stats.average_response_time_ms,
+            error_rate_percent: if stats.total_requests > 0 {
+                (stats.total_failures as f64 / stats.total_requests as f64) * 100.0
+            } else {
+                0.0
+            },
+            total_active_users: stats.total_active_users,
+            throughput_rpm: stats.requests_per_second * 60.0,
+        })
+    }
+
+    async fn determine_overall_system_health(&self, connection_summary: &ConnectionSummary, performance_summary: &PerformanceSummary, alerts: &[HealthAlert]) -> SystemHealthStatus {
+        let critical_alerts = alerts.iter().filter(|a| a.severity == AlertSeverity::Critical).count();
+        let error_alerts = alerts.iter().filter(|a| a.severity == AlertSeverity::Error).count();
+        
+        if critical_alerts > 0 || connection_summary.disconnected_workers > connection_summary.total_workers / 2 {
+            SystemHealthStatus::Critical
+        } else if error_alerts > 0 || connection_summary.degraded_connections > connection_summary.total_workers / 3 {
+            SystemHealthStatus::Degraded
+        } else if performance_summary.error_rate_percent > 5.0 || connection_summary.average_latency_ms > 200.0 {
+            SystemHealthStatus::Warning
+        } else {
+            SystemHealthStatus::Healthy
+        }
+    }
+}
+
+/// Helper structure for connection summary calculations (Section 6.1)
+#[derive(Debug, Default)]
+struct ConnectionSummaryData {
+    total_workers: u32,
+    healthy_connections: u32,
+    degraded_connections: u32,
+    unstable_connections: u32,
+    disconnected_workers: u32,
+    reconnecting_workers: u32,
+    failed_connections: u32,
+    total_latency: f64,
+    active_connections: u32,
+}
+
+/// Health dashboard data for external monitoring systems (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct HealthDashboardData {
+    pub timestamp: std::time::Instant,
+    pub overall_health: SystemHealthStatus,
+    pub total_workers: u32,
+    pub healthy_workers: u32,
+    pub degraded_workers: u32,
+    pub disconnected_workers: u32,
+    pub average_latency: f64,
+    pub stability_score: f64,
+    pub total_rps: f64,
+    pub error_rate: f64,
+    pub active_users: u32,
+    pub recent_alerts: u32,
+    pub health_score: f64,
+}
+
+/// Additional health monitoring structures for comprehensive reporting (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct HealthReport {
+    /// Timestamp when the report was generated
+    pub timestamp: std::time::Instant,
+    /// Overall system health status
+    pub overall_health: SystemHealthStatus,
+    /// Individual worker health statuses
+    pub worker_health: std::collections::HashMap<String, WorkerHealthStatus>,
+    /// Connection quality summary
+    pub connection_summary: ConnectionSummary,
+    /// Performance metrics summary
+    pub performance_summary: PerformanceSummary,
+    /// Active alerts and warnings
+    pub alerts: Vec<HealthAlert>,
+}
+
+/// System-wide health status (Section 6.1)
+#[derive(Debug, Clone, PartialEq)]
+pub enum SystemHealthStatus {
+    /// All systems operational
+    Healthy,
+    /// Minor issues detected
+    Warning,
+    /// Significant issues affecting performance
+    Degraded,
+    /// Critical issues requiring immediate attention
+    Critical,
+}
+
+/// Individual worker health status for detailed monitoring (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct WorkerHealthStatus {
+    /// Worker identifier
+    pub worker_id: String,
+    /// Current connection status
+    pub connection_status: ConnectionStatus,
+    /// Connection quality score (0.0 - 1.0)
+    pub quality_score: f64,
+    /// Current latency in milliseconds
+    pub current_latency_ms: f64,
+    /// Time since last heartbeat
+    pub seconds_since_heartbeat: u64,
+    /// Number of active users on this worker
+    pub active_users: u32,
+    /// Worker performance metrics
+    pub performance_metrics: WorkerPerformanceMetrics,
+}
+
+/// Worker-specific performance metrics (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct WorkerPerformanceMetrics {
+    /// Requests per second
+    pub requests_per_second: f64,
+    /// Average response time in milliseconds
+    pub avg_response_time_ms: f64,
+    /// Error rate percentage
+    pub error_rate_percent: f64,
+    /// CPU usage percentage (if available)
+    pub cpu_usage_percent: Option<f64>,
+    /// Memory usage percentage (if available)  
+    pub memory_usage_percent: Option<f64>,
+}
+
+/// Connection quality summary across all workers (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct ConnectionSummary {
+    /// Total number of connected workers
+    pub total_workers: u32,
+    /// Number of healthy connections
+    pub healthy_connections: u32,
+    /// Number of degraded connections
+    pub degraded_connections: u32,
+    /// Number of unstable connections
+    pub unstable_connections: u32,
+    /// Number of disconnected workers
+    pub disconnected_workers: u32,
+    /// Average connection latency across all workers
+    pub average_latency_ms: f64,
+    /// Overall connection stability score (0.0 - 1.0)
+    pub stability_score: f64,
+}
+
+/// Performance summary across all workers (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct PerformanceSummary {
+    /// Total requests per second across all workers
+    pub total_rps: f64,
+    /// Average response time across all workers
+    pub avg_response_time_ms: f64,
+    /// Overall error rate percentage
+    pub error_rate_percent: f64,
+    /// Total number of active users
+    pub total_active_users: u32,
+    /// System throughput in requests per minute
+    pub throughput_rpm: f64,
+}
+
+/// Health alert for monitoring and notification systems (Section 6.1)
+#[derive(Debug, Clone)]
+pub struct HealthAlert {
+    /// Alert severity level
+    pub severity: AlertSeverity,
+    /// Alert type/category
+    pub alert_type: AlertType,
+    /// Human-readable alert message
+    pub message: String,
+    /// Worker ID if alert is worker-specific
+    pub worker_id: Option<String>,
+    /// Timestamp when alert was triggered
+    pub timestamp: std::time::Instant,
+    /// Additional context data
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+/// Alert severity levels (Section 6.1)
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlertSeverity {
+    /// Informational alert
+    Info,
+    /// Warning that may require attention
+    Warning,
+    /// Error that affects functionality
+    Error,
+    /// Critical issue requiring immediate action
+    Critical,
+}
+
+/// Types of health alerts (Section 6.1)
+#[derive(Debug, Clone, PartialEq)]
+pub enum AlertType {
+    /// Connection-related alerts
+    ConnectionIssue,
+    /// Performance degradation alerts
+    PerformanceIssue,
+    /// Worker disconnection alerts
+    WorkerDisconnect,
+    /// High latency alerts
+    HighLatency,
+    /// Error rate alerts
+    HighErrorRate,
+    /// Resource usage alerts
+    ResourceIssue,
 }
 
 /// gRPC service implementation
@@ -1828,6 +2429,8 @@ impl GaggleService for GaggleServiceImpl {
                 state: super::gaggle_proto::WorkerState::Idle,
                 active_users: 0,
                 last_heartbeat: std::time::Instant::now(),
+                connection_health: ConnectionHealthInfo::default(),
+                connection_metrics: ConnectionQualityMetrics::default(),
             },
         );
 
