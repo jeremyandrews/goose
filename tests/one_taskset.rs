@@ -7,6 +7,9 @@ use goose::config::GooseConfiguration;
 use goose::goose::GooseMethod;
 use goose::prelude::*;
 
+#[cfg(feature = "dhat-heap")]
+use dhat;
+
 // Paths used in load tests performed during these tests.
 const INDEX_PATH: &str = "/";
 const ABOUT_PATH: &str = "/about.html";
@@ -285,4 +288,24 @@ async fn test_one_scenario_reset_metrics() {
 // Requires the 'gaggle' feature to be enabled: cargo test --features gaggle
 async fn test_one_senario_reset_metrics_gaggle() {
     run_gaggle_test(TestType::ResetMetrics).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[serial]
+#[cfg(feature = "dhat-heap")]
+// MEMORY LEAK PROFILING: Test the actual gaggle scenario that shows memory leaks.
+// This test enables dhat profiling to capture real memory usage patterns.
+// Requires: cargo test --features "gaggle,dhat-heap" --test one_taskset test_one_scenario_gaggle_with_profiling
+async fn test_one_scenario_gaggle_with_profiling() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
+    println!("=== MEMORY LEAK PROFILING: Starting gaggle test with dhat profiling enabled ===");
+
+    // Run the same test that shows memory leaks
+    run_gaggle_test(TestType::NoResetMetrics).await;
+
+    println!(
+        "=== MEMORY LEAK PROFILING: Gaggle test completed, dhat data written to dhat-heap.json ==="
+    );
 }

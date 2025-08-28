@@ -478,7 +478,7 @@ impl From<flume::SendError<Option<GooseLog>>> for TransactionError {
 }
 
 /// An individual scenario.
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, Debug)]
 pub struct Scenario {
     /// The name of the scenario.
     pub name: String,
@@ -3236,6 +3236,20 @@ impl Hash for Transaction {
         self.sequence.hash(state);
         self.on_start.hash(state);
         self.on_stop.hash(state);
+    }
+}
+
+impl Debug for Transaction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Transaction")
+            .field("transactions_index", &self.transactions_index)
+            .field("name", &self.name)
+            .field("weight", &self.weight)
+            .field("sequence", &self.sequence)
+            .field("on_start", &self.on_start)
+            .field("on_stop", &self.on_stop)
+            .field("function", &"<function>")
+            .finish()
     }
 }
 

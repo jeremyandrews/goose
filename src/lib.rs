@@ -397,6 +397,7 @@ struct GooseAttackRunState {
 }
 
 /// Global internal state for the load test.
+#[derive(Debug)]
 pub struct GooseAttack {
     /// An optional transaction that is run one time before starting GooseUsers and running Scenarios.
     test_start_transaction: Option<Transaction>,
@@ -973,7 +974,7 @@ impl GooseAttack {
         }
 
         // Create and start the gaggle manager in a background task
-        let manager = GaggleManager::new(gaggle_config);
+        let manager = Arc::new(GaggleManager::new(gaggle_config));
 
         // Start the gRPC server in the background, don't await it
         let manager_handle = tokio::spawn(async move {

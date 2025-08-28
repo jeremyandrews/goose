@@ -2861,8 +2861,38 @@ impl GooseAttack {
         let receive_timeout = 400;
         let receive_started = std::time::Instant::now();
 
+        // Memory limits to prevent unbounded growth
+        const MAX_REQUEST_METRICS: usize = 10000;
+        const MAX_ERROR_METRICS: usize = 1000;
+        const MAX_TIMING_DATA_ENTRIES: usize = 1000;
+        const MAX_STATUS_CODE_ENTRIES: usize = 100;
+
         while message.is_ok() {
             received_message = true;
+
+            // Apply memory limits to prevent unbounded growth
+            if self.metrics.requests.len() >= MAX_REQUEST_METRICS {
+                // Remove oldest entries to maintain limit
+                let excess = self.metrics.requests.len() - (MAX_REQUEST_METRICS * 3 / 4); // Keep 75%
+                let keys_to_remove: Vec<String> =
+                    self.metrics.requests.keys().take(excess).cloned().collect();
+                for key in keys_to_remove {
+                    self.metrics.requests.remove(&key);
+                }
+                debug!("Trimmed {} request metrics to prevent memory leak", excess);
+            }
+
+            if self.metrics.errors.len() >= MAX_ERROR_METRICS {
+                // Remove oldest error entries to maintain limit
+                let excess = self.metrics.errors.len() - (MAX_ERROR_METRICS * 3 / 4); // Keep 75%
+                let keys_to_remove: Vec<String> =
+                    self.metrics.errors.keys().take(excess).cloned().collect();
+                for key in keys_to_remove {
+                    self.metrics.errors.remove(&key);
+                }
+                debug!("Trimmed {} error metrics to prevent memory leak", excess);
+            }
+
             match message.unwrap() {
                 GooseMetric::Request(request_metric) => {
                     // If there was an error, store it.
@@ -2927,6 +2957,57 @@ impl GooseAttack {
                         // Merge the `GooseRequestMetric` into a `GooseRequestMetricAggregate` in
                         // `GooseMetrics.requests`, and write to the requests log if enabled.
                         self.record_request_metric(&request_metric).await;
+
+                        // Apply memory limits to individual request metric timing data
+                        let key = format!("{} {}", request_metric.raw.method, request_metric.name);
+                        if let Some(request_aggregate) = self.metrics.requests.get_mut(&key) {
+                            // Limit timing data entries
+                            if request_aggregate.raw_data.times.len() > MAX_TIMING_DATA_ENTRIES {
+                                let excess = request_aggregate.raw_data.times.len()
+                                    - (MAX_TIMING_DATA_ENTRIES * 3 / 4);
+                                let keys_to_remove: Vec<usize> = request_aggregate
+                                    .raw_data
+                                    .times
+                                    .keys()
+                                    .take(excess)
+                                    .cloned()
+                                    .collect();
+                                for timing_key in keys_to_remove {
+                                    request_aggregate.raw_data.times.remove(&timing_key);
+                                }
+                            }
+
+                            // Limit status code entries
+                            if request_aggregate.status_code_counts.len() > MAX_STATUS_CODE_ENTRIES
+                            {
+                                let excess = request_aggregate.status_code_counts.len()
+                                    - (MAX_STATUS_CODE_ENTRIES * 3 / 4);
+                                let keys_to_remove: Vec<u16> = request_aggregate
+                                    .status_code_counts
+                                    .keys()
+                                    .take(excess)
+                                    .cloned()
+                                    .collect();
+                                for status_key in keys_to_remove {
+                                    request_aggregate.status_code_counts.remove(&status_key);
+                                }
+                            }
+
+                            // Limit coordinated omission data if present
+                            if let Some(co_data) =
+                                request_aggregate.coordinated_omission_data.as_mut()
+                            {
+                                if co_data.times.len() > MAX_TIMING_DATA_ENTRIES {
+                                    let excess =
+                                        co_data.times.len() - (MAX_TIMING_DATA_ENTRIES * 3 / 4);
+                                    let keys_to_remove: Vec<usize> =
+                                        co_data.times.keys().take(excess).cloned().collect();
+                                    for timing_key in keys_to_remove {
+                                        co_data.times.remove(&timing_key);
+                                    }
+                                }
+                            }
+                        }
 
                         if !self.configuration.report_file.is_empty() {
                             let seconds_since_start = (request_metric.elapsed / 1000) as usize;

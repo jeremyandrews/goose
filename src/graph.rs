@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::marker::PhantomData;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ItemsPerSecond(HashMap<String, TimeSeries<u32, u32>>);
 
 impl ItemsPerSecond {
@@ -62,6 +62,7 @@ impl ItemsPerSecond {
 }
 
 /// Used to collect graph data during a load test.
+#[derive(Debug)]
 pub(crate) struct GraphData {
     /// Counts requests per second for each request type.
     requests_per_second: ItemsPerSecond,
