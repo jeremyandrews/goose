@@ -155,7 +155,7 @@ async fn test_comprehensive_metrics_reset_integration() {
         "Should have reached 3 users"
     );
     assert!(
-        goose_metrics.requests.len() > 0,
+        !goose_metrics.requests.is_empty(),
         "Should have recorded requests"
     );
 
@@ -169,8 +169,11 @@ async fn test_comprehensive_metrics_reset_integration() {
     // Verify transaction metrics if available
     if !goose_metrics.transactions.is_empty() {
         let mut total_transactions = 0;
-        for (_, transaction_metric) in goose_metrics.transactions.iter() {
-            total_transactions += transaction_metric.success_count + transaction_metric.fail_count;
+        for scenario_transactions in goose_metrics.transactions.iter() {
+            for transaction_metric in scenario_transactions.iter() {
+                total_transactions +=
+                    transaction_metric.success_count + transaction_metric.fail_count;
+            }
         }
         assert!(
             total_transactions > 0,
@@ -189,8 +192,8 @@ async fn test_comprehensive_metrics_reset_integration() {
     // The existence of successful metrics indicates that our graph data preservation
     // didn't break the normal metrics collection process
     assert!(
-        goose_metrics.final_users <= goose_metrics.maximum_users,
-        "Final users should not exceed maximum users"
+        goose_metrics.total_users >= goose_metrics.maximum_users,
+        "Total users should be at least as many as maximum users"
     );
 }
 
