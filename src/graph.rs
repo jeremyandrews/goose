@@ -96,7 +96,7 @@ impl GraphData {
         // Preserve the current user count before reset
         let last_user_count = current_users.unwrap_or_else(|| {
             // Get the last recorded user count from existing data
-            self.users_per_second.last().get_total_value()
+            self.users_per_second.last()
         });
 
         // Reset all graph data
