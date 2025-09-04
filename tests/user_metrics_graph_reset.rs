@@ -219,11 +219,11 @@ async fn test_graph_data_preservation_during_reset() {
         )
         .set_default(GooseDefault::Host, host.as_str())
         .unwrap()
-        .set_default(GooseDefault::Users, 2)  // Minimal users for CI stability
+        .set_default(GooseDefault::Users, 2) // Minimal users for CI stability
         .unwrap()
-        .set_default(GooseDefault::HatchRate, "2")  // Fast hatch
+        .set_default(GooseDefault::HatchRate, "2") // Fast hatch
         .unwrap()
-        .set_default(GooseDefault::RunTime, 1)  // Very short run time
+        .set_default(GooseDefault::RunTime, 1) // Very short run time
         .unwrap()
         .set_default(GooseDefault::ReportFile, "test_graph_reset.html")
         .unwrap();
@@ -232,9 +232,18 @@ async fn test_graph_data_preservation_during_reset() {
 
     // Verify basic functionality - if the graph data preservation fix works,
     // this test should complete successfully without hanging or errors
-    assert_eq!(metrics.maximum_users, 2, "Should have reached 2 maximum users");
-    assert!(!metrics.requests.is_empty(), "Should have processed requests");
-    assert!(metrics.duration > 0, "Test should have run for some duration");
+    assert_eq!(
+        metrics.maximum_users, 2,
+        "Should have reached 2 maximum users"
+    );
+    assert!(
+        !metrics.requests.is_empty(),
+        "Should have processed requests"
+    );
+    assert!(
+        metrics.duration > 0,
+        "Test should have run for some duration"
+    );
 
     // The key insight: if our graph data preservation fix is working correctly,
     // this test completes without issues. The specific graph continuity behavior
