@@ -749,13 +749,71 @@ impl GooseAttack {
         // configured `--scenarios`.
         } else {
             for active in &self.configuration.scenarios.active {
-                if scenario.machine_name.contains(active) {
-                    return true;
+                // Check if wildcard is used for pattern matching
+                if active.contains('*') {
+                    // Use pattern matching with proper wildcard support
+                    if self.wildcard_match(active, &scenario.machine_name) {
+                        return true;
+                    }
+                } else {
+                    // Use exact matching
+                    if scenario.machine_name == *active {
+                        return true;
+                    }
                 }
             }
             // No matches found, this scenario is not active.
             false
         }
+    }
+
+    /// Helper function to perform wildcard matching.
+    /// Supports wildcards at the beginning, middle, or end of patterns.
+    fn wildcard_match(&self, pattern: &str, text: &str) -> bool {
+        // Handle the simple case of just "*" which matches everything
+        if pattern == "*" {
+            return true;
+        }
+
+        // Split the pattern by '*' to get the parts that must be present
+        let parts: Vec<&str> = pattern.split('*').collect();
+
+        // If there are no wildcards, this should be exact matching (but we already checked for '*')
+        if parts.len() == 1 {
+            return text == pattern;
+        }
+
+        let mut text_pos = 0;
+
+        for (i, part) in parts.iter().enumerate() {
+            // Skip empty parts (which occur when pattern starts/ends with * or has consecutive *)
+            if part.is_empty() {
+                continue;
+            }
+
+            // For the first part, it must match at the beginning (if pattern doesn't start with *)
+            if i == 0 && !pattern.starts_with('*') {
+                if !text[text_pos..].starts_with(part) {
+                    return false;
+                }
+                text_pos += part.len();
+            }
+            // For the last part, it must match at the end (if pattern doesn't end with *)
+            else if i == parts.len() - 1 && !pattern.ends_with('*') {
+                if !text[text_pos..].ends_with(part) {
+                    return false;
+                }
+                // No need to update text_pos as this is the last part
+            }
+            // For middle parts, they must exist somewhere in the remaining text
+            else if let Some(pos) = text[text_pos..].find(part) {
+                text_pos += pos + part.len();
+            } else {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Use configured GooseScheduler to build out a properly weighted list of
