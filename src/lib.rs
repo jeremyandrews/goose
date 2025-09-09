@@ -742,29 +742,19 @@ impl GooseAttack {
 
     /// Internal helper to determine if the scenario is currently active.
     fn scenario_is_active(&self, scenario: &Scenario) -> bool {
-        // All scenarios are enabled by default.
+        // If no scenarios are configured, all are active.
         if self.configuration.scenarios.active.is_empty() {
-            true
-        // Returns true or false depending on if the machine name is included in the
-        // configured `--scenarios`.
-        } else {
-            for active in &self.configuration.scenarios.active {
-                // Check if wildcard is used for pattern matching
-                if active.contains('*') {
-                    // Use pattern matching with proper wildcard support
-                    if self.wildcard_match(active, &scenario.machine_name) {
-                        return true;
-                    }
-                } else {
-                    // Use exact matching
-                    if scenario.machine_name == *active {
-                        return true;
-                    }
-                }
-            }
-            // No matches found, this scenario is not active.
-            false
+            return true;
         }
+        // Otherwise, check to see if this scenario is active, matching against
+        // configured `--scenarios`.
+        self.configuration.scenarios.active.iter().any(|active| {
+            if active.contains('*') {
+                self.wildcard_match(active, &scenario.machine_name)
+            } else {
+                scenario.machine_name == *active
+            }
+        })
     }
 
     /// Helper function to perform wildcard matching.
