@@ -313,133 +313,121 @@ async fn test_scenarios_default_gaggle() {
 
 /* Test exact matching vs wildcard matching for Issue #612 */
 
+/// Helper function to run a parameterized scenario test with default scenarios
+async fn run_scenario_matching_test(
+    scenario_filter: &str,
+    test_scenarios: Vec<Scenario>,
+    expected_results: &[(usize, bool, &str)], // (endpoint_index, should_have_hits, description)
+) {
+    run_scenario_matching_test_with_config(scenario_filter, test_scenarios, expected_results, None)
+        .await;
+}
+
+/// Helper function to run a parameterized scenario test with custom configuration
+async fn run_scenario_matching_test_with_config(
+    scenario_filter: &str,
+    test_scenarios: Vec<Scenario>,
+    expected_results: &[(usize, bool, &str)], // (endpoint_index, should_have_hits, description)
+    custom_config: Option<Vec<&str>>,
+) {
+    let server = MockServer::start();
+    let mock_endpoints = setup_mock_server_endpoints(&server);
+
+    let mut config_args = vec![
+        "--users",
+        "5",
+        "--hatch-rate",
+        "5",
+        "--run-time",
+        "1",
+        "--no-reset-metrics",
+        "--scenarios",
+        scenario_filter,
+    ];
+
+    // Add custom configuration if provided
+    if let Some(custom) = custom_config {
+        config_args.extend(custom);
+    }
+
+    let configuration = common::build_configuration(&server, config_args);
+
+    let goose = common::build_load_test(configuration, test_scenarios, None, None);
+    let _goose_metrics = common::run_load_test(goose, None).await;
+
+    // Validate expected results
+    for (endpoint_index, should_have_hits, description) in expected_results {
+        let hits = mock_endpoints[*endpoint_index].hits();
+        if *should_have_hits {
+            assert!(hits > 0, "{}", description);
+        } else {
+            assert_eq!(hits, 0, "{}", description);
+        }
+    }
+}
+
 #[tokio::test]
 // Test exact matching - should only run the exact scenario name specified
 async fn test_exact_scenario_matching() {
-    // Start the mock server.
-    let server = MockServer::start();
-
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration to run only "Scenario A1" exactly
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenarioa1", // Exact match, should only run Scenario A1
-        ],
-    );
-
-    // Create scenarios with overlapping names to test exact matching
     let scenarios = vec![
         scenario!("Scenario A1").register_transaction(transaction!(get_scenarioa1)),
         scenario!("Scenario A1 Extended").register_transaction(transaction!(get_scenarioa2)), // This should NOT run
         scenario!("Scenario B1").register_transaction(transaction!(get_scenariob1)),
     ];
 
-    let goose = common::build_load_test(configuration.clone(), scenarios, None, None);
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A1 Extended should NOT have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "Scenario B1 should NOT have been executed",
+        ),
+    ];
 
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - only scenarioa1 should have been called
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A1 Extended should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() == 0,
-        "Scenario B1 should NOT have been executed"
-    );
+    run_scenario_matching_test("scenarioa1", scenarios, expected_results).await;
 }
 
 #[tokio::test]
 // Test wildcard matching - should run all scenarios matching the pattern
 async fn test_wildcard_scenario_matching() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed",
+        ),
+        (
+            SCENARIOA2_KEY,
+            true,
+            "Scenario A2 should have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "Scenario B1 should NOT have been executed",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "Scenario B2 should NOT have been executed",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration to run scenarios matching "scenarioa*" pattern
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenarioa*", // Wildcard match, should run both Scenario A1 and A2
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - both scenarioa1 and scenarioa2 should have been called, but not scenariob*
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() > 0,
-        "Scenario A2 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() == 0,
-        "Scenario B1 should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() == 0,
-        "Scenario B2 should NOT have been executed"
-    );
+    run_scenario_matching_test("scenarioa*", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
 // Test the specific issue from #612 - substring matching problem
 async fn test_issue_612_substring_problem() {
-    // Start the mock server.
-    let server = MockServer::start();
-
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration to run only "scenarioa1" exactly (simulating the issue scenario)
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenarioa1", // Should match ONLY "Scenario A1", not "Scenario A1 Extended"
-        ],
-    );
-
-    // Create scenarios that simulate the issue: one name is substring of another
     let scenarios = vec![
         scenario!("Scenario A1").register_transaction(transaction!(get_scenarioa1)),
         scenario!("Scenario A1 Extended").register_transaction(transaction!(get_scenarioa2)), // Contains "scenarioa1" as substring
@@ -447,322 +435,204 @@ async fn test_issue_612_substring_problem() {
         scenario!("Scenario B2").register_transaction(transaction!(get_scenariob2)),
     ];
 
-    let goose = common::build_load_test(configuration.clone(), scenarios, None, None);
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A1 Extended should NOT have been executed (substring issue)",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "Extended Scenario A1 should NOT have been executed (substring issue)",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "Scenario B2 should NOT have been executed",
+        ),
+    ];
 
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - ONLY the exact match should run
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A1 Extended should NOT have been executed (substring issue)"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() == 0,
-        "Extended Scenario A1 should NOT have been executed (substring issue)"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() == 0,
-        "Scenario B2 should NOT have been executed"
-    );
+    run_scenario_matching_test("scenarioa1", scenarios, expected_results).await;
 }
 
 #[tokio::test]
 // Test multiple exact scenarios with comma separation
 async fn test_multiple_exact_scenarios() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A2 should NOT have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "Scenario B1 should NOT have been executed",
+        ),
+        (
+            SCENARIOB2_KEY,
+            true,
+            "Scenario B2 should have been executed",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration to run multiple exact scenarios
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenarioa1,scenariob2", // Exact matches for two specific scenarios
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - only the two specified scenarios should run
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A2 should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() == 0,
-        "Scenario B1 should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() > 0,
-        "Scenario B2 should have been executed"
-    );
+    run_scenario_matching_test("scenarioa1,scenariob2", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
 // Test mixing exact and wildcard scenarios
 async fn test_mixed_exact_and_wildcard_scenarios() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed (exact match)",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A2 should NOT have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "Scenario B1 should have been executed (wildcard match)",
+        ),
+        (
+            SCENARIOB2_KEY,
+            true,
+            "Scenario B2 should have been executed (wildcard match)",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration with both exact and wildcard matches
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenarioa1,scenariob*", // Exact match for A1, wildcard for all B scenarios
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed (exact match)"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A2 should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() > 0,
-        "Scenario B1 should have been executed (wildcard match)"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() > 0,
-        "Scenario B2 should have been executed (wildcard match)"
-    );
+    run_scenario_matching_test("scenarioa1,scenariob*", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
-// Test edge case: empty pattern after removing wildcard
+// Test edge case: wildcard that matches everything
 async fn test_wildcard_edge_cases() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed",
+        ),
+        (
+            SCENARIOA2_KEY,
+            true,
+            "Scenario A2 should have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "Scenario B1 should have been executed",
+        ),
+        (
+            SCENARIOB2_KEY,
+            true,
+            "Scenario B2 should have been executed",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration with wildcard that matches everything
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "*", // Should match all scenarios
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - all scenarios should run
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() > 0,
-        "Scenario A2 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() > 0,
-        "Scenario B1 should have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() > 0,
-        "Scenario B2 should have been executed"
-    );
+    run_scenario_matching_test("*", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
 // Test wildcard at the beginning of scenario names
 async fn test_wildcard_at_beginning() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed (ends with '1')",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A2 should NOT have been executed (ends with '2')",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "Scenario B1 should have been executed (ends with '1')",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "Scenario B2 should NOT have been executed (ends with '2')",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration with wildcard at the beginning
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "*1", // Should match scenarios ending with "1" (machine names are lowercase)
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - should match "Scenario A1" and "Scenario B1" (both end with "1")
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed (ends with '1')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A2 should NOT have been executed (ends with '2')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() > 0,
-        "Scenario B1 should have been executed (ends with '1')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() == 0,
-        "Scenario B2 should NOT have been executed (ends with '2')"
-    );
+    run_scenario_matching_test("*1", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
 // Test wildcard in the middle of scenario names
 async fn test_wildcard_in_middle() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed (matches 'scenario*1')",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A2 should NOT have been executed (ends with '2')",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "Scenario B1 should have been executed (matches 'scenario*1')",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "Scenario B2 should NOT have been executed (ends with '2')",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration with wildcard in the middle
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "scenario*1", // Should match scenarios starting with "scenario" and ending with "1"
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results - should match "Scenario A1" and "Scenario B1" (both start with "scenario" and end with "1")
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed (matches 'scenario*1')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A2 should NOT have been executed (ends with '2')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() > 0,
-        "Scenario B1 should have been executed (matches 'scenario*1')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() == 0,
-        "Scenario B2 should NOT have been executed (ends with '2')"
-    );
+    run_scenario_matching_test("scenario*1", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
 // Test multiple wildcards in different positions
 async fn test_multiple_wildcard_positions() {
-    // Start the mock server.
-    let server = MockServer::start();
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "Scenario A1 should have been executed (matches '*a1')",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "Scenario A2 should NOT have been executed",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "Scenario B1 should have been executed (matches both '*a1' and 'scenariob*')",
+        ),
+        (
+            SCENARIOB2_KEY,
+            true,
+            "Scenario B2 should have been executed (matches 'scenariob*')",
+        ),
+    ];
 
-    // Setup the endpoints needed for this test on the mock server.
-    let mock_endpoints = setup_mock_server_endpoints(&server);
-
-    // Build configuration with multiple wildcard patterns
-    let configuration = common::build_configuration(
-        &server,
-        vec![
-            "--users",
-            "5",
-            "--hatch-rate",
-            "5",
-            "--run-time",
-            "1",
-            "--no-reset-metrics",
-            "--scenarios",
-            "*a1,scenariob*", // Beginning wildcard for "*a1" and end wildcard for "scenariob*"
-        ],
-    );
-
-    let goose = common::build_load_test(configuration.clone(), get_scenarios(), None, None);
-
-    // Run the Goose Attack.
-    let _goose_metrics = common::run_load_test(goose, None).await;
-
-    // Validate results
-    assert!(
-        mock_endpoints[SCENARIOA1_KEY].hits() > 0,
-        "Scenario A1 should have been executed (matches '*a1')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOA2_KEY].hits() == 0,
-        "Scenario A2 should NOT have been executed"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB1_KEY].hits() > 0,
-        "Scenario B1 should have been executed (matches both '*a1' and 'scenariob*')"
-    );
-    assert!(
-        mock_endpoints[SCENARIOB2_KEY].hits() > 0,
-        "Scenario B2 should have been executed (matches 'scenariob*')"
-    );
+    run_scenario_matching_test("*a1,scenariob*", get_scenarios(), expected_results).await;
 }
 
 #[tokio::test]
@@ -1177,4 +1047,110 @@ async fn test_complex_multiple_wildcards() {
         complex_mock4.hits() == 0,
         "Load Test Performance should NOT have been executed (wrong order)"
     );
+}
+
+/* NEW WILDCARD CAPABILITIES TESTS - Features from wildcard crate not supported in original implementation */
+
+#[tokio::test]
+// Test question mark wildcard - single character matching
+async fn test_question_mark_wildcard() {
+    let scenarios = vec![
+        scenario!("scenario a1").register_transaction(transaction!(get_scenarioa1)),
+        scenario!("scenario b1").register_transaction(transaction!(get_scenarioa2)),
+        scenario!("scenario_c1").register_transaction(transaction!(get_scenariob1)),
+        scenario!("scenarioX1").register_transaction(transaction!(get_scenariob2)),
+    ];
+
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "scenario a1 should match 'scenario?a1'",
+        ),
+        (
+            SCENARIOA2_KEY,
+            true,
+            "scenario b1 should match 'scenario?b1'",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "scenario_c1 should NOT match 'scenario?a1' (underscore is not a single char)",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "scenarioX1 should NOT match 'scenario?a1' (X != a)",
+        ),
+    ];
+
+    run_scenario_matching_test("scenario?a1", scenarios, expected_results).await;
+}
+
+#[tokio::test]
+// Test character classes - [abc] patterns
+async fn test_character_classes() {
+    let scenarios = vec![
+        scenario!("test-a-scenario").register_transaction(transaction!(get_scenarioa1)), // Should match [abc]
+        scenario!("test-b-scenario").register_transaction(transaction!(get_scenarioa2)), // Should match [abc]
+        scenario!("test-c-scenario").register_transaction(transaction!(get_scenariob1)), // Should match [abc]
+        scenario!("test-d-scenario").register_transaction(transaction!(get_scenariob2)), // Should NOT match [abc]
+    ];
+
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            true,
+            "test-a-scenario should match 'test-[abc]-scenario'",
+        ),
+        (
+            SCENARIOA2_KEY,
+            true,
+            "test-b-scenario should match 'test-[abc]-scenario'",
+        ),
+        (
+            SCENARIOB1_KEY,
+            true,
+            "test-c-scenario should match 'test-[abc]-scenario'",
+        ),
+        (
+            SCENARIOB2_KEY,
+            false,
+            "test-d-scenario should NOT match 'test-[abc]-scenario' (d not in class)",
+        ),
+    ];
+
+    run_scenario_matching_test("test-[abc]-scenario", scenarios, expected_results).await;
+}
+
+#[tokio::test]
+// Test edge cases and error conditions with invalid patterns
+async fn test_wildcard_error_conditions() {
+    // Test with patterns that might cause errors in wildcard parsing
+    let scenarios = vec![
+        scenario!("scenario a1").register_transaction(transaction!(get_scenarioa1)),
+        scenario!("scenario[test]").register_transaction(transaction!(get_scenarioa2)),
+        scenario!("normal-scenario").register_transaction(transaction!(get_scenariob1)),
+    ];
+
+    let expected_results = &[
+        (
+            SCENARIOA1_KEY,
+            false,
+            "scenario a1 should NOT match invalid pattern (graceful fallback)",
+        ),
+        (
+            SCENARIOA2_KEY,
+            false,
+            "scenario[test] should NOT match invalid pattern (graceful fallback)",
+        ),
+        (
+            SCENARIOB1_KEY,
+            false,
+            "normal-scenario should NOT match invalid pattern (graceful fallback)",
+        ),
+    ];
+
+    // Test with a potentially invalid pattern - unclosed bracket
+    run_scenario_matching_test("scenario[unclosed", scenarios, expected_results).await;
 }
