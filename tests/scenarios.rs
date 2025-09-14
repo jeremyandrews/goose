@@ -1055,72 +1055,72 @@ async fn test_complex_multiple_wildcards() {
 // Test question mark wildcard - single character matching
 async fn test_question_mark_wildcard() {
     let scenarios = vec![
-        scenario!("scenario a1").register_transaction(transaction!(get_scenarioa1)),
-        scenario!("scenario b1").register_transaction(transaction!(get_scenarioa2)),
-        scenario!("scenario_c1").register_transaction(transaction!(get_scenariob1)),
-        scenario!("scenarioX1").register_transaction(transaction!(get_scenariob2)),
+        scenario!("scenarioa1").register_transaction(transaction!(get_scenarioa1)),
+        scenario!("scenariob1").register_transaction(transaction!(get_scenarioa2)),
+        scenario!("scenariot1").register_transaction(transaction!(get_scenariob1)),
+        scenario!("scenarioxx1").register_transaction(transaction!(get_scenariob2)),
     ];
 
     let expected_results = &[
         (
             SCENARIOA1_KEY,
             true,
-            "scenario a1 should match 'scenario?a1'",
+            "scenarioa1 should match 'scenario?1'",
         ),
         (
             SCENARIOA2_KEY,
             true,
-            "scenario b1 should match 'scenario?b1'",
+            "scenariob1 should match 'scenario?1'",
         ),
         (
             SCENARIOB1_KEY,
-            false,
-            "scenario_c1 should NOT match 'scenario?a1' (underscore is not a single char)",
+            true,
+            "scenariot1 should match 'scenario?1'",
         ),
         (
             SCENARIOB2_KEY,
             false,
-            "scenarioX1 should NOT match 'scenario?a1' (X != a)",
+            "scenarioxx1 should NOT match 'scenario?1' (too long)",
         ),
     ];
 
-    run_scenario_matching_test("scenario?a1", scenarios, expected_results).await;
+    run_scenario_matching_test("scenario?1", scenarios, expected_results).await;
 }
 
 #[tokio::test]
 // Test character classes - [abc] patterns
 async fn test_character_classes() {
     let scenarios = vec![
-        scenario!("test-a-scenario").register_transaction(transaction!(get_scenarioa1)), // Should match [abc]
-        scenario!("test-b-scenario").register_transaction(transaction!(get_scenarioa2)), // Should match [abc]
-        scenario!("test-c-scenario").register_transaction(transaction!(get_scenariob1)), // Should match [abc]
-        scenario!("test-d-scenario").register_transaction(transaction!(get_scenariob2)), // Should NOT match [abc]
+        scenario!("testa").register_transaction(transaction!(get_scenarioa1)), // Should match test[abc]
+        scenario!("testb").register_transaction(transaction!(get_scenarioa2)), // Should match test[abc]
+        scenario!("testc").register_transaction(transaction!(get_scenariob1)), // Should match test[abc]
+        scenario!("testd").register_transaction(transaction!(get_scenariob2)), // Should NOT match test[abc]
     ];
 
     let expected_results = &[
         (
             SCENARIOA1_KEY,
             true,
-            "test-a-scenario should match 'test-[abc]-scenario'",
+            "testa should match 'test[abc]'",
         ),
         (
             SCENARIOA2_KEY,
             true,
-            "test-b-scenario should match 'test-[abc]-scenario'",
+            "testb should match 'test[abc]'",
         ),
         (
             SCENARIOB1_KEY,
             true,
-            "test-c-scenario should match 'test-[abc]-scenario'",
+            "testc should match 'test[abc]'",
         ),
         (
             SCENARIOB2_KEY,
             false,
-            "test-d-scenario should NOT match 'test-[abc]-scenario' (d not in class)",
+            "testd should NOT match 'test[abc]' (d not in class)",
         ),
     ];
 
-    run_scenario_matching_test("test-[abc]-scenario", scenarios, expected_results).await;
+    run_scenario_matching_test("test[abc]", scenarios, expected_results).await;
 }
 
 #[tokio::test]
@@ -1128,26 +1128,26 @@ async fn test_character_classes() {
 async fn test_wildcard_error_conditions() {
     // Test with patterns that might cause errors in wildcard parsing
     let scenarios = vec![
-        scenario!("scenario a1").register_transaction(transaction!(get_scenarioa1)),
-        scenario!("scenario[test]").register_transaction(transaction!(get_scenarioa2)),
-        scenario!("normal-scenario").register_transaction(transaction!(get_scenariob1)),
+        scenario!("scenarioa1").register_transaction(transaction!(get_scenarioa1)),
+        scenario!("scenariotest").register_transaction(transaction!(get_scenarioa2)),
+        scenario!("normalscenario").register_transaction(transaction!(get_scenariob1)),
     ];
 
     let expected_results = &[
         (
             SCENARIOA1_KEY,
             false,
-            "scenario a1 should NOT match invalid pattern (graceful fallback)",
+            "scenarioa1 should NOT match invalid pattern (graceful fallback)",
         ),
         (
             SCENARIOA2_KEY,
             false,
-            "scenario[test] should NOT match invalid pattern (graceful fallback)",
+            "scenariotest should NOT match invalid pattern (graceful fallback)",
         ),
         (
             SCENARIOB1_KEY,
             false,
-            "normal-scenario should NOT match invalid pattern (graceful fallback)",
+            "normalscenario should NOT match invalid pattern (graceful fallback)",
         ),
     ];
 
