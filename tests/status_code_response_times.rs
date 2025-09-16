@@ -47,27 +47,34 @@ pub async fn get_error(user: &mut GooseUser) -> TransactionResult {
 
 // Set up mock server with different endpoints that return different status codes.
 fn setup_mock_server_endpoints(server: &MockServer) -> Vec<Mock<'_>> {
-    vec![
+    let mut mocks = vec![
         // SUCCESS_PATH always returns 200
         server.mock(|when, then| {
             when.method(GET).path(SUCCESS_PATH);
             then.status(200);
         }),
-        // MIXED_PATH returns 200 about 70% of the time, 400 about 30% of the time
+        // MIXED_PATH returns 200 most of the time
         server.mock(|when, then| {
             when.method(GET).path(MIXED_PATH);
             then.status(200);
-        }),
-        server.mock(|when, then| {
-            when.method(GET).path(MIXED_PATH);
-            then.status(400);
         }),
         // ERROR_PATH always returns 400
         server.mock(|when, then| {
             when.method(GET).path(ERROR_PATH);
             then.status(400);
         }),
-    ]
+    ];
+
+    // Add a separate mock for MIXED_PATH that returns 400 occasionally
+    // This will be handled randomly by httpmock
+    for _ in 0..2 {
+        mocks.push(server.mock(|when, then| {
+            when.method(GET).path(MIXED_PATH);
+            then.status(400);
+        }));
+    }
+
+    mocks
 }
 
 // Returns the scenario needed to build these tests.
