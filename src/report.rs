@@ -69,6 +69,7 @@ pub(crate) struct ResponseMetric {
     pub percentile_95: usize,
     pub percentile_99: usize,
     pub percentile_100: usize,
+    pub is_breakdown: bool,
 }
 
 /// Defines the metrics reported about transactions.
@@ -140,6 +141,7 @@ pub(crate) fn get_response_metric(
         percentile_95: percentiles[5],
         percentile_99: percentiles[6],
         percentile_100: percentiles[7],
+        is_breakdown: method.starts_with("└─"),
     }
 }
 
@@ -171,8 +173,8 @@ pub(crate) fn raw_request_metrics_row(metric: RequestMetric) -> String {
 
 /// Build an individual row of response metrics in the html report.
 pub(crate) fn response_metrics_row(metric: ResponseMetric) -> String {
-    // Check if this is a status code breakdown (starts with └─)
-    if metric.method.starts_with("└─") {
+    // Check if this is a status code breakdown
+    if metric.is_breakdown {
         // Status code breakdown row - merge first two columns and use increased indentation
         format!(
             r#"<tr style="background-color: #f8f9fa;">
