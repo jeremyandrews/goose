@@ -171,8 +171,35 @@ pub(crate) fn raw_request_metrics_row(metric: RequestMetric) -> String {
 
 /// Build an individual row of response metrics in the html report.
 pub(crate) fn response_metrics_row(metric: ResponseMetric) -> String {
-    format!(
-        r#"<tr>
+    // Check if this is a status code breakdown (starts with └─)
+    if metric.method.starts_with("└─") {
+        // Status code breakdown row - merge first two columns and use increased indentation
+        format!(
+            r#"<tr style="background-color: #f8f9fa;">
+            <td colspan="2" style="padding-left: 50px; font-style: italic; text-align: left;">{method}</td>
+            <td>{percentile_50}</td>
+            <td>{percentile_60}</td>
+            <td>{percentile_70}</td>
+            <td>{percentile_80}</td>
+            <td>{percentile_90}</td>
+            <td>{percentile_95}</td>
+            <td>{percentile_99}</td>
+            <td>{percentile_100}</td>
+        </tr>"#,
+            method = metric.method,
+            percentile_50 = format_number(metric.percentile_50),
+            percentile_60 = format_number(metric.percentile_60),
+            percentile_70 = format_number(metric.percentile_70),
+            percentile_80 = format_number(metric.percentile_80),
+            percentile_90 = format_number(metric.percentile_90),
+            percentile_95 = format_number(metric.percentile_95),
+            percentile_99 = format_number(metric.percentile_99),
+            percentile_100 = format_number(metric.percentile_100),
+        )
+    } else {
+        // Regular response metrics row
+        format!(
+            r#"<tr>
             <td>{method}</td>
             <td>{name}</td>
             <td>{percentile_50}</td>
@@ -184,17 +211,18 @@ pub(crate) fn response_metrics_row(metric: ResponseMetric) -> String {
             <td>{percentile_99}</td>
             <td>{percentile_100}</td>
         </tr>"#,
-        method = metric.method,
-        name = metric.name,
-        percentile_50 = format_number(metric.percentile_50),
-        percentile_60 = format_number(metric.percentile_60),
-        percentile_70 = format_number(metric.percentile_70),
-        percentile_80 = format_number(metric.percentile_80),
-        percentile_90 = format_number(metric.percentile_90),
-        percentile_95 = format_number(metric.percentile_95),
-        percentile_99 = format_number(metric.percentile_99),
-        percentile_100 = format_number(metric.percentile_100),
-    )
+            method = metric.method,
+            name = metric.name,
+            percentile_50 = format_number(metric.percentile_50),
+            percentile_60 = format_number(metric.percentile_60),
+            percentile_70 = format_number(metric.percentile_70),
+            percentile_80 = format_number(metric.percentile_80),
+            percentile_90 = format_number(metric.percentile_90),
+            percentile_95 = format_number(metric.percentile_95),
+            percentile_99 = format_number(metric.percentile_99),
+            percentile_100 = format_number(metric.percentile_100),
+        )
+    }
 }
 
 /// If Coordinated Omission Mitigation is triggered, add a relevant request table to the
