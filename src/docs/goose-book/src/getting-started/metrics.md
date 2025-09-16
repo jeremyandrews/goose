@@ -329,7 +329,7 @@ The next graph shows the response times measured for each request made. Goose me
 
 **Technical Precision:** Goose measures the time from when a request starts until response headers are received (as measured by reqwest). This is TTFB in the traditional sense, though technically it's when response headers arrive rather than the literal first byte of response content.
 
-**What Is Measured:**
+**Technical Precision:** Goose measures the time from when a request starts until it receives response headers (as measured by reqwest). This is TTFB in the traditional sense, although technically it's when response headers arrive rather than the literal first byte of response content.
 - Network latency to establish connection
 - Server processing time to generate response
 - Time to receive response headers and status code
